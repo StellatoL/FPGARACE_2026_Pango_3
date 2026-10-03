@@ -1,5 +1,10 @@
+# Preserve imported source and verification hashes exactly.
 * -text
+*.sh text eol=lf
 *.md text eol=lf
-.gitignore text eol=lf
-.gitattributes text eol=lf
+*.rknn binary
+*.so binary
+*.ko binary
 *.png binary
+*.ico binary
+*.zip binary

@@ -1,0 +1,63 @@
+{
+  "path_base": "system workspace root",
+  "assets": [
+    {
+      "path": "arm/models/plate_lprnet.rknn",
+      "bytes": 411031,
+      "sha256": "0918e7c10e29a39684a5e11d94b8117e78bfb5a550e647046d39c84be65eb975",
+      "provenance": "local imported asset, unchanged; not redistributed",
+      "included_in_git": false
+    },
+    {
+      "path": "arm/models/plate_yolov5.rknn",
+      "bytes": 7757117,
+      "sha256": "5a06fdf2939f9c5948de1979a74441c4d0c17bf6227b7422528fae3468b20adf",
+      "provenance": "local imported asset, unchanged; not redistributed",
+      "included_in_git": false
+    },
+    {
+      "path": "arm/models/traffic_yolov5.rknn",
+      "bytes": 8345209,
+      "sha256": "62296449866eefb1391015cce7592007bd0fb35a6062cc510c72953bd4dd7db4",
+      "provenance": "local imported asset, unchanged; not redistributed",
+      "included_in_git": false
+    },
+    {
+      "path": "arm/models/yolov5s_traffic.rknn",
+      "bytes": 16323455,
+      "sha256": "ab9c2a2e3e8a437508d77e4701ecaffef23990023781287c05c19786e99031c1",
+      "provenance": "local imported asset, unchanged; not redistributed",
+      "included_in_git": false
+    },
+    {
+      "path": "arm/third_party/rknn/lib/librknnrt.so",
+      "bytes": 7726232,
+      "sha256": "d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8",
+      "provenance": "local imported asset, unchanged; not redistributed",
+      "included_in_git": false
+    },
+    {
+      "path": "arm/drivers/prebuilt/pango_pci_driver_mul.ko",
+      "bytes": 136400,
+      "sha256": "173904a078cd8ff166c350a24c950044a3dbab73800ee6460524c33f18db5277",
+      "provenance": "published copy: four non-allocated DWARF directory prefixes redacted; all other bytes unchanged; local original retained",
+      "included_in_git": true,
+      "original_sha256": "296065139776718045e6ed6de6855861ba28bed351d948e5a656ca542aa86c7d"
+    },
+    {
+      "path": "archive/imported-arm/build_release/img_recv_demo",
+      "bytes": 492600,
+      "sha256": "a10fc308d2905431b7bcea3c50fc294cee0415ffbee5be2988c63bbb8f52f5c4",
+      "provenance": "local imported asset, unchanged; not redistributed",
+      "included_in_git": false
+    },
+    {
+      "path": "arm/third_party/rknn/include/rknn_api.h",
+      "bytes": 32084,
+      "sha256": "1a3baa1c26bd65b78a8ed766badb843098502d37c930dc89f276bae9ce4a5b8b",
+      "included_in_git": false,
+      "provenance": "restricted vendor SDK header; obtain separately"
+    }
+  ],
+  "hash_scope": "SHA256 refers to publication bytes when included_in_git is true, otherwise the local imported asset"
+}

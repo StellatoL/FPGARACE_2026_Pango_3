@@ -1,6 +1,6 @@
 # AVM algorithm and fixture tools
 
-Run from the ADAS repository root, with Python 3.10+ and `requirements.txt` installed:
+Run from the `fpga/` subproject root, with Python 3.10+ and `requirements.txt` installed:
 
 ```powershell
 python tools/avm/generate.py --case small --matlab
