@@ -1,0 +1,57 @@
+# ARM build outputs; retain the original validated program and its runtime.
+/build_adas/
+/build/
+/build-*/
+/build_release/*
+!/build_release/img_recv_demo
+!/build_release/librknnrt.so
+!/build_release/run_img_recv_demo.sh
+/dist/
+
+# Local archives, calibration and session data.
+!/.codex/
+/.codex/*
+!/.codex/fpga-baseline.sha256
+/config/calibrations/
+.venv/
+__pycache__/
+*.py[cod]
+*.user
+*.user.*
+.env
+.env.*
+*.pem
+*.key
+
+# Reproducible PDS work databases. Keep project/constraints/IP/RTL and bitstreams.
+/FPGA/prj/compile/
+/FPGA/prj/constraint_check/
+/FPGA/prj/device_map/
+/FPGA/prj/place_route/
+/FPGA/prj/report_timing/
+/FPGA/prj/synthesize/
+/FPGA/prj/ipcore/*/pnr/compile/
+/FPGA/prj/ipcore/*/pnr/constraint_check/
+/FPGA/prj/ipcore/*/pnr/device_map/
+/FPGA/prj/ipcore/*/pnr/place_route/
+/FPGA/prj/ipcore/*/pnr/report_timing/
+/FPGA/prj/ipcore/*/pnr/synthesize/
+/FPGA/**/bak/
+/FPGA/**/logbackup/
+/FPGA/**/log/
+/FPGA/**/temp_20*
+*.log
+*.o
+*.obj
+.qmake.stash
+Makefile
+Makefile.*
+moc_*.cpp
+moc_predefs.h
+ui_*.h
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Required binary deliverables are intentionally versioned, including the driver.
+!drivers/*.ko

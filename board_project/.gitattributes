@@ -1,0 +1,11 @@
+# Preserve the exact bytes of the board-validated sources and binary assets.
+* -text
+*.ko binary
+*.rknn binary
+*.so binary
+*.sfc binary
+*.sbit binary
+*.png binary
+*.ico binary
+*.pdf binary
+*.mp4 binary

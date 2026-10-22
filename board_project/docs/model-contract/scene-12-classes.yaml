@@ -1,0 +1,21 @@
+# 最小12类训练配置。必须将path改为训练PC的数据根目录。
+# 适用于YOLOv5 v7.0；标签中的class_id取下面names顺序。
+# train/val/test按完整道路片段隔离，不混用同片段相邻帧。
+path: /absolute/path/to/adas-scene
+train: images/train
+val: images/val
+test: images/test
+nc: 12
+names:
+  - person
+  - vehicle
+  - crosswalk
+  - light_red
+  - light_yellow
+  - light_green
+  - cone
+  - barrier
+  - debris
+  - nav_left
+  - nav_straight
+  - nav_right

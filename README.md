@@ -1,3 +1,7 @@
+> **2026-10-22 当前板端工程入口：[`board_project/`](board_project/README.md)。**
+> 本次上传包含原有采集通信链路、ARM轻量化ADAS接入、板载FPGA项目/RTL/IP及上板文件、PCIe驱动、临时模型和构建依赖。驱动明确位于[`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后从`board_project/`运行`./build.sh`，模型契约见[两模型接入规范](board_project/docs/model-replacement-roadmap.md)。最终模型仍训练中，实际ADAS精度/性能尚待验收。
+> 原有`arm/`、`fpga/`工程及下述历史验证说明原样保留；它们是独立版本，与`board_project/FPGA`不混用。
+
 # RK3568_50H 四路环视与 ARM ADAS 工程
 
 本工程面向紫光同创 RK3568_50H 平台，包含 FPGA 四路地面鸟瞰拼接核心，以及 RK3568 上的 Qt 视频显示、RKNN 推理和 ADAS 演示软件。
