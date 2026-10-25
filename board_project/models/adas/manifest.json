@@ -1,0 +1,72 @@
+{
+  "schema": 2,
+  "target": "rk3568",
+  "version": "adas8-candidate-2026-10-25",
+  "toolkit_version": "2.3.2",
+  "road_roi": [
+    0,
+    0.42,
+    1,
+    0.58
+  ],
+  "lane": null,
+  "scene": {
+    "file": "scene.rknn",
+    "sha256": "e1071502f99b8157799af65175b6de1aa861b9cbfbeb8bc715e48687b64720ee",
+    "quantization": "int8",
+    "runtime_api_prefix": "2.3.2 (",
+    "input": {
+      "width": 640,
+      "height": 640,
+      "layout": "NHWC",
+      "format": "RGB8",
+      "mean": [
+        0,
+        0,
+        0
+      ],
+      "std": [
+        255,
+        255,
+        255
+      ]
+    },
+    "output": "yolov5_rk_sigmoid_nchw_v1",
+    "classes": [
+      "person",
+      "vehicle",
+      "crosswalk",
+      "light_red",
+      "light_green",
+      "cone",
+      "barrier",
+      "debris"
+    ],
+    "anchors": [
+      [
+        10.0,
+        13.0,
+        16.0,
+        30.0,
+        33.0,
+        23.0
+      ],
+      [
+        30.0,
+        61.0,
+        62.0,
+        45.0,
+        59.0,
+        119.0
+      ],
+      [
+        116.0,
+        90.0,
+        156.0,
+        198.0,
+        373.0,
+        326.0
+      ]
+    ]
+  }
+}

@@ -66,6 +66,8 @@ private slots:
     QCOMPARE(speed->value(),0.);QVERIFY(speed->isEnabled());QVERIFY(c->decision_.speed_valid);
     QCOMPARE(int(c->decision_.speed_source),int(adas::SpeedSource::Simulation));
     window.setFocus();QTest::keyClick(&window,Qt::Key_1);QCOMPARE(lane->currentIndex(),0);
+    for(int index:{1,2,3,0}){QTest::keyClick(&window,Qt::Key_N);QCOMPARE(c->nav_combo_->currentIndex(),index);}
+    QVERIFY(!c->ego_.manual_nav_enabled);
     speed->setFocus();QTest::keyClick(speed,Qt::Key_3);QCOMPARE(lane->currentIndex(),0);
     speed->clearFocus();window.setFocus();QTest::keyClick(&window,Qt::Key_Space);
     QVERIFY(window.findChild<QCheckBox*>("adasManualStop")->isChecked());
@@ -120,16 +122,33 @@ private slots:
     for(uint64_t seq=20;seq<=22;++seq) {
       auto nav=road(c,seq);nav.components=adas::GeometryObservation::Navigation;nav.nav={true,adas::Direction::Right,.9f,{}};send(c,nav);
     }
-    QCOMPARE(c->last_geometry_.stamp.sequence,uint64_t(102));QCOMPARE(c->last_navigation_.stamp.sequence,uint64_t(22));
+    QCOMPARE(c->last_geometry_.stamp.sequence,uint64_t(102));QCOMPARE(c->last_navigation_.stamp.sequence,uint64_t(0));
+    QCOMPARE(c->navigation_count_,uint64_t(0));QCOMPARE(c->ego_.lane_change_request_s,0.);
+    QCOMPARE(int(c->decision_.arrow),int(adas::Direction::Straight));
+    c->nav_combo_->setCurrentIndex(3);c->tick();
     QVERIFY(c->decision_.lane_change_allowed);QCOMPARE(int(c->decision_.arrow),int(adas::Direction::Right));
+    const double requested=c->ego_.lane_change_request_s;
     auto stale=road(c,21,adas::LineType::Solid);stale.components=adas::GeometryObservation::Navigation;stale.status=adas::Status::Failed;send(c,stale);
-    QCOMPARE(c->last_navigation_.stamp.sequence,uint64_t(22));
+    QCOMPARE(c->last_navigation_.stamp.sequence,uint64_t(0));QCOMPARE(c->ego_.lane_change_request_s,requested);
     auto failure=road(c,103);failure.status=adas::Status::Failed;send(c,failure);
-    QCOMPARE(c->last_navigation_.stamp.sequence,uint64_t(22));QVERIFY(!c->decision_.lane_change_allowed);
+    QCOMPARE(c->last_navigation_.stamp.sequence,uint64_t(0));QCOMPARE(c->ego_.lane_change_request_s,requested);QVERIFY(!c->decision_.lane_change_allowed);
+    c->nav_combo_->setCurrentIndex(0);c->tick();
+    QCOMPARE(c->ego_.lane_change_request_s,0.);QCOMPARE(c->navigation_count_,uint64_t(0));
     auto previous_scene=scene(c,1000);auto previous_lane=road(c,1000);const auto epoch=c->generation_.load();
     c->reset_decision();QVERIFY(c->generation_.load()>epoch);send(c,previous_scene);send(c,previous_lane);
     QVERIFY(!c->views_[0].stamp.sequence&&!c->last_geometry_.stamp.sequence&&c->decision_.stop_required);
     QVERIFY(window.close());
+  }
+  void missing_lane_is_not_counted_as_npu_and_denies_change() {
+    MainWindow window;window.show();window.set_single_view(true);auto *c=control(window);QVERIFY(c);c->timer_.stop();
+    std::vector<unsigned char> pixels(1280*720*2,0x32);const double now=adas::monotonic_seconds();
+    auto frame=c->live_pool_.copy(pixels.data(),1280,720,2560,{c->generation_.load(),1,now,now,false},adas::Layout::Single);
+    QVERIFY(frame);c->display_mailbox_.publish(frame);c->tick();QVERIFY(!c->rendered_.isNull());
+    for(uint64_t seq=1;seq<=3;++seq){send(c,scene(c,seq));auto lane=road(c,seq);lane.status=adas::Status::Missing;send(c,lane);}
+    c->nav_combo_->setCurrentIndex(3);c->tick();
+    QCOMPARE(c->geometry_count_,uint64_t(0));QVERIFY(!c->decision_.lane_change_allowed);
+    const auto result=report(c);QCOMPARE(result["lane_npu_hz_average"].toDouble(),0.);
+    QCOMPARE(result["geometry_receive_to_hud_p95_ms"].toDouble(),-1.);QVERIFY(window.close());
   }
   void bounded_mailboxes_keep_latest_without_repeated_votes() {
     MainWindow window;auto *c=control(window);QVERIFY(c);c->timer_.stop();

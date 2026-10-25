@@ -1,3 +1,4 @@
+# 历史12类配置，仅供旧raw模型参考；当前请使用scene-8-classes.yaml。
 # 最小12类训练配置。必须将path改为训练PC的数据根目录。
 # 适用于YOLOv5 v7.0；标签中的class_id取下面names顺序。
 # train/val/test按完整道路片段隔离，不混用同片段相邻帧。

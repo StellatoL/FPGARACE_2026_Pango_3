@@ -31,6 +31,21 @@ class BundleTest(unittest.TestCase):
             with self.assertRaises(ValueError):prepare('missing-capability')
             self.assertFalse((root/'missing-capability').exists())
 
+    def test_eight_class_scene_without_lane(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name);(root/'scene.rknn').write_bytes(b'fixture, not an RKNN model')
+            names=['person','vehicle','crosswalk','light_red','light_green','cone','barrier','debris']
+            sm={'classes':names,'output':'yolov5_rk_sigmoid_nchw_v1','width':640,'height':640,'anchors':[[10,13,16,30,33,23]]*3}
+            (root/'scene.json').write_text(json.dumps(sm))
+            m=bundle.prepare(root/'scene.rknn',root/'scene.json',None,None,root/'out','adas8','2.3.2','2.3.2 (')
+            self.assertEqual(m['schema'],2);self.assertIsNone(m['lane'])
+            self.assertEqual(m['scene']['classes'],names)
+            self.assertEqual(m['scene']['output'],'yolov5_rk_sigmoid_nchw_v1')
+            self.assertFalse((root/'out/lane.rknn').exists())
+            names.remove('debris');(root/'scene.json').write_text(json.dumps(sm))
+            with self.assertRaises(ValueError):
+                bundle.prepare(root/'scene.rknn',root/'scene.json',None,None,root/'unsafe','v','t','r')
+
     def test_reject_incompatible_shapes_and_roi(self):
         with tempfile.TemporaryDirectory() as name:
             root=Path(name)

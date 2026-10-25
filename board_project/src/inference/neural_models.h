@@ -11,6 +11,7 @@ class NeuralModels {
 public:
   NeuralModels();~NeuralModels();
   bool initialize(const QString &root);
+  bool lane_configured() const;
   NeuralSceneResult scene(const FramePacket &packet,ViewId view,
       const std::array<Roi,3> &light_rois,const Roi &nav_roi,const Roi &crop={0,0,1,1});
   GeometryObservation lane(const FramePacket &packet);

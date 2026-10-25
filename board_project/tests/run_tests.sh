@@ -25,7 +25,10 @@ g++ "${ADAS_CXX_FLAGS[@]}" tests/neural_contract_test.cpp src/inference/neural_c
 "$ADAS_TEST_BUILD/neural_contract_test"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/neural_schedule_test.cpp -o "$ADAS_TEST_BUILD/neural_schedule_test"
 "$ADAS_TEST_BUILD/neural_schedule_test"
+g++ "${ADAS_CXX_FLAGS[@]}" -Ithird_party/rknn/include tests/neural_models_status_test.cpp src/inference/neural_contract.cpp src/inference/neural_models.cpp "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -Lthird_party/rknn/lib -lrknnrt -o "$ADAS_TEST_BUILD/neural_models_status_test"
+"$ADAS_TEST_BUILD/neural_models_status_test"
 python3 tests/model_bundle_test.py
+python3 tests/export_rk_scene_test.py
 /usr/lib/qt5/bin/moc -Isrc src/common/file_video_source.h -o "$ADAS_TEST_BUILD/moc_file_video_source.cpp"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/file_video_source_test.cpp src/common/file_video_source.cpp "$ADAS_TEST_BUILD/moc_file_video_source.cpp" "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/file_test"
 "$ADAS_TEST_BUILD/file_test"
@@ -49,6 +52,10 @@ PYOBJECTS
   [[ "${#ADAS_OBJECTS[@]}" -gt 0 ]] || { echo 'No qmake objects found' >&2; exit 1; }
   g++ "${ADAS_CXX_FLAGS[@]}" -I"$ADAS_TEST_BUILD" tests/adas_ui_test.cpp "${ADAS_OBJECTS[@]}" "${ADAS_GUI_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -Lthird_party/rknn/lib -lrknnrt -ldl -o "$ADAS_TEST_BUILD/ui_test"
   QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" "$ADAS_TEST_BUILD/ui_test"
+fi
+if [[ "${ADAS_TEST_RGA:-0}" == 1 ]]; then
+  g++ "${ADAS_CXX_FLAGS[@]}" tests/rga_input_test.cpp src/inference/rga_preprocessor.cpp "${ADAS_CV_FLAGS[@]}" -ldl -o "$ADAS_TEST_BUILD/rga_input_test"
+  "$ADAS_TEST_BUILD/rga_input_test"
 fi
 sha256sum -c .codex/fpga-baseline.sha256
 printf 'All requested tests passed. Artifacts: %s\n' "$ADAS_TEST_BUILD"

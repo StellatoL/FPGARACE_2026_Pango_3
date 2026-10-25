@@ -196,8 +196,10 @@ bool RgaPreprocessor::rgb565_crop_to_rgb_strict(const unsigned char *pixels,
   source.virAddr = const_cast<unsigned char *>(pixels);
   target.virAddr = output.data;
   source.mmuFlag = target.mmuFlag = 1;
+  // Qt/FPGA RGB565 is R in bits 11..15. RGA names formats from low bits;
+  // this memory layout is BGR_565, not its low-red RGB_565.
   rga_set_rect(&source.rect, crop.x, crop.y, crop.width, crop.height,
-               stride / 2, height, RK_FORMAT_RGB_565);
+               stride / 2, height, RK_FORMAT_BGR_565);
   rga_set_rect(&target.rect, destination.x, destination.y,
                destination.width, destination.height, dst_w, dst_h, RK_FORMAT_RGB_888);
   return rga_lib_->RgaBlit(&source, &target, nullptr) == 0;
@@ -235,6 +237,7 @@ namespace {
 int to_pixel_stride(int byte_stride, int format) {
   int bpp;
   switch (format) {
+  case RK_FORMAT_BGR_565:
   case 0x400:  // RK_FORMAT_RGB_565
   case 0x500:  // RK_FORMAT_RGBA_5551
   case 0x600:  // RK_FORMAT_RGBA_4444
@@ -326,7 +329,7 @@ bool RgaPreprocessor::self_check_rgb565_to_bgr() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     blit_ok = rga_blit(src_bytes, w, h, stride,
-                       static_cast<int>(RK_FORMAT_RGB_565), 0, 0,
+                       static_cast<int>(RK_FORMAT_BGR_565), 0, 0,
                        rga_bgr.data, w, h, static_cast<int>(w * 3),
                        static_cast<int>(RK_FORMAT_BGR_888), 0, 0);
   }
@@ -365,7 +368,7 @@ void RgaPreprocessor::rgb565_to_bgr(cv::Mat &bgr, const unsigned char *frame565,
   std::lock_guard<std::mutex> lock(mutex_);
   bool ok = rga_blit(
       frame565, width, height, stride_bytes,
-      static_cast<int>(RK_FORMAT_RGB_565),
+      static_cast<int>(RK_FORMAT_BGR_565),
       0, 0,
       bgr.data, width, height, static_cast<int>(width * 3),
       static_cast<int>(RK_FORMAT_BGR_888),
@@ -537,7 +540,7 @@ void RgaPreprocessor::rgb565_to_rgb_resized(const unsigned char *frame565,
   std::lock_guard<std::mutex> lock(mutex_);
   bool ok = rga_blit(
       frame565, width, height, stride_bytes,
-      static_cast<int>(RK_FORMAT_RGB_565),
+      static_cast<int>(RK_FORMAT_BGR_565),
       0, 0,
       output.data, dst_w, dst_h, static_cast<int>(dst_w * 3),
       static_cast<int>(RK_FORMAT_RGB_888),

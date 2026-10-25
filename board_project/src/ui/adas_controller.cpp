@@ -113,7 +113,7 @@ void AdasController::setup_controls() {
   lane_combo_=new QComboBox(controls);lane_combo_->addItems({QStringLiteral("左车道 [1]"),QStringLiteral("直行车道 [2]"),QStringLiteral("右车道 [3]")});lane_combo_->setCurrentIndex(1);form->addRow(QStringLiteral("本车"),lane_combo_);
   signal_combo_=new QComboBox(controls);signal_combo_->addItems({QStringLiteral("关闭"),QStringLiteral("左 [A]"),QStringLiteral("右 [D]")});form->addRow(QStringLiteral("转向灯"),signal_combo_);
   force_lane_combo_=new QComboBox(controls);force_lane_combo_->addItems({QStringLiteral("无"),QStringLiteral("强制左 [J]"),QStringLiteral("强制右 [L]")});form->addRow(QStringLiteral("变道"),force_lane_combo_);
-  nav_combo_=new QComboBox(controls);nav_combo_->addItems({QStringLiteral("视觉自动"),QStringLiteral("手动左"),QStringLiteral("手动直行"),QStringLiteral("手动右")});form->addRow(QStringLiteral("导航 [N]"),nav_combo_);
+  nav_combo_=new QComboBox(controls);nav_combo_->addItems({QStringLiteral("不跟随导航"),QStringLiteral("手动左"),QStringLiteral("手动直行"),QStringLiteral("手动右")});form->addRow(QStringLiteral("导航 [N]"),nav_combo_);
   auto_check_=new QCheckBox(QStringLiteral("自动模拟驾驶"),controls);auto_check_->setChecked(true);l->addWidget(auto_check_);
   intersection_check_=new QCheckBox(QStringLiteral("路口方向提示"),controls);l->addWidget(intersection_check_);
   manual_stop_check_=new QCheckBox(QStringLiteral("人工停车 [空格]"),controls);l->addWidget(manual_stop_check_);
@@ -133,7 +133,7 @@ void AdasController::setup_controls() {
   ui_->infoPanelLayout->insertWidget(1,state);
   auto *calib=group(QStringLiteral("标定与感知区域"),window_,&l);
   auto *calibrate_button=new QPushButton(QStringLiteral("前视路面四点标定"),calib);calibrate_button->setObjectName("adasCalibrate");l->addWidget(calibrate_button);connect(calibrate_button,&QPushButton::clicked,this,&AdasController::calibrate);
-  auto *roi=new QPushButton(QStringLiteral("导航 / 各车道灯 ROI"),calib);l->addWidget(roi);connect(roi,&QPushButton::clicked,this,&AdasController::edit_rois);
+  auto *roi=new QPushButton(QStringLiteral("各车道信号灯 ROI"),calib);l->addWidget(roi);connect(roi,&QPushButton::clicked,this,&AdasController::edit_rois);
   auto *clear=new QPushButton(QStringLiteral("清除当前标定"),calib);l->addWidget(clear);connect(clear,&QPushButton::clicked,this,[this](){calibration_.reset();QFile::remove(project_root()+"/config/calibrations/"+profile_key()+".yml");update_settings();advance_generation();});
   ui_->controlPanelLayout->insertWidget(1,calib);
   update_ego();
@@ -324,11 +324,7 @@ void AdasController::refresh_turn_request(bool new_request) {
   if(intent==adas::TurnSignal::None&&!junction) {
     intent=ego_.signal;
     if(intent==adas::TurnSignal::None) {
-      const bool nav_fresh=last_navigation_.status==adas::Status::Valid&&last_navigation_.stamp.sequence&&
-        last_navigation_.stamp.generation==generation_.load()&&now>=last_navigation_.stamp.receive_s&&
-        now-last_navigation_.stamp.receive_s<=engine_.front_timeout_s;
-      const auto nav=ego_.manual_nav_enabled?ego_.manual_nav:nav_fresh&&last_navigation_.nav.detected&&last_navigation_.nav.confidence>=.5f?
-        last_navigation_.nav.dir:adas::Direction::None;
+      const auto nav=ego_.manual_nav_enabled?ego_.manual_nav:adas::Direction::None;
       intent=nav==adas::Direction::Left?adas::TurnSignal::Left:nav==adas::Direction::Right?adas::TurnSignal::Right:adas::TurnSignal::None;
     }
   }
@@ -407,10 +403,10 @@ void AdasController::accept_result(VisionFrameResult result) {
     };
     unsigned accepted=0;
     if((result.observation.components&adas::ObjectObservation::Traffic)&&result.stamp.sequence>views_[v].stamp.sequence) {
-      views_[v]=component_result(adas::ObjectObservation::Traffic);++detection_count_[v];accepted|=adas::ObjectObservation::Traffic;
+      views_[v]=component_result(adas::ObjectObservation::Traffic);if(result.observation.traffic_status==adas::Status::Valid)++detection_count_[v];accepted|=adas::ObjectObservation::Traffic;
     }
     if((result.observation.components&adas::ObjectObservation::Vehicle)&&result.stamp.sequence>vehicle_views_[v].stamp.sequence) {
-      vehicle_views_[v]=component_result(adas::ObjectObservation::Vehicle);++vehicle_count_[v];accepted|=adas::ObjectObservation::Vehicle;
+      vehicle_views_[v]=component_result(adas::ObjectObservation::Vehicle);if(result.observation.vehicle_status==adas::Status::Valid)++vehicle_count_[v];accepted|=adas::ObjectObservation::Vehicle;
     }
     if((result.observation.components&adas::ObjectObservation::Roadblock)&&result.stamp.sequence>roadblock_views_[v].stamp.sequence) {
       roadblock_views_[v]=component_result(adas::ObjectObservation::Roadblock);accepted|=adas::ObjectObservation::Roadblock;
@@ -420,7 +416,7 @@ void AdasController::accept_result(VisionFrameResult result) {
     if(signal&&result.stamp.sequence>last_signal_.stamp.sequence) {
       const auto &p=result.observation;
       const auto status=p.signal_status==adas::Status::Missing&&(p.components&adas::ObjectObservation::Traffic)?p.traffic_status:p.signal_status;
-      last_signal_={result.stamp,status,p.light,p.has_lane_lights,p.lane_lights};++signal_count_;
+      last_signal_={result.stamp,status,p.light,p.has_lane_lights,p.lane_lights};if(status==adas::Status::Valid)++signal_count_;
     }
     if(result.observation.components&adas::ObjectObservation::Signal)accepted|=adas::ObjectObservation::Signal;
     if(accepted){result.observation.components=accepted;engine_.ingest(result.observation,adas::monotonic_seconds());}
@@ -433,11 +429,9 @@ void AdasController::accept_geometry(adas::GeometryObservation result) {
   if(engine_.generation()!=generation_.load())engine_.reset(generation_.load());
   unsigned accepted=0;
   if(geometry_enabled_&&(result.components&adas::GeometryObservation::Lane)&&result.stamp.sequence>last_geometry_.stamp.sequence) {
-    last_geometry_=result;last_geometry_.components=adas::GeometryObservation::Lane;++geometry_count_;accepted|=adas::GeometryObservation::Lane;
+    last_geometry_=result;last_geometry_.components=adas::GeometryObservation::Lane;if(result.status==adas::Status::Valid)++geometry_count_;accepted|=adas::GeometryObservation::Lane;
   }
-  if((result.components&adas::GeometryObservation::Navigation)&&result.stamp.sequence>last_navigation_.stamp.sequence) {
-    last_navigation_=result;last_navigation_.components=adas::GeometryObservation::Navigation;++navigation_count_;accepted|=adas::GeometryObservation::Navigation;
-  }
+  // Navigation is manual: visual results cannot change its direction or confirmation history.
   if(accepted){result.components=accepted;engine_.ingest(result,adas::monotonic_seconds());refresh_turn_request();}
 }
 bool AdasController::eventFilter(QObject *receiver,QEvent *event) {
@@ -505,12 +499,12 @@ void AdasController::calibrate() {
 void AdasController::edit_rois() {
   QDialog dialog(window_);dialog.setWindowTitle(QStringLiteral("前视 ROI · 相对前视图的百分比"));
   auto *layout=new QVBoxLayout(&dialog);auto *grid=new QGridLayout;layout->addLayout(grid);
-  const QStringList names={QStringLiteral("导航"),QStringLiteral("左车道灯"),QStringLiteral("直行灯"),QStringLiteral("右车道灯")};
-  std::array<std::array<QDoubleSpinBox*,4>,4> values{};
+  const QStringList names={QStringLiteral("左车道灯"),QStringLiteral("直行灯"),QStringLiteral("右车道灯")};
+  std::array<std::array<QDoubleSpinBox*,4>,3> values{};
   for(int col=0;col<4;++col)grid->addWidget(new QLabel(QStringList{"X%","Y%","W%","H%"}[col],&dialog),0,col+1);
-  for(int row=0;row<4;++row) {
+  for(int row=0;row<3;++row) {
     grid->addWidget(new QLabel(names[row],&dialog),row+1,0);
-    auto roi=row==0?nav_roi_:light_rois_[row-1];double initial[]={roi.x,roi.y,roi.w,roi.h};
+    auto roi=light_rois_[row];double initial[]={roi.x,roi.y,roi.w,roi.h};
     for(int col=0;col<4;++col) {
       auto *spin=new QDoubleSpinBox(&dialog);spin->setRange(col<2?0:1,100);spin->setValue(initial[col]*100);
       spin->setDecimals(1);values[row][col]=spin;grid->addWidget(spin,row+1,col+1);
@@ -520,14 +514,14 @@ void AdasController::edit_rois() {
   auto *buttons=new QDialogButtonBox(QDialogButtonBox::Save|QDialogButtonBox::Cancel,&dialog);layout->addWidget(buttons);
   connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
   connect(buttons,&QDialogButtonBox::accepted,&dialog,[&](){
-    std::array<adas::Roi,4> rois;
-    for(int row=0;row<4;++row) {
+    std::array<adas::Roi,3> rois;
+    for(int row=0;row<3;++row) {
       rois[row]={values[row][0]->value()/100,values[row][1]->value()/100,values[row][2]->value()/100,values[row][3]->value()/100};
       if(rois[row].x+rois[row].w>1.00001||rois[row].y+rois[row].h>1.00001){QMessageBox::warning(&dialog,QStringLiteral("ROI"),QStringLiteral("区域不能超出前视边界"));return;}
     }
-    nav_roi_=rois[0];for(int i=0;i<3;++i)light_rois_[i]=rois[i+1];
+    light_rois_=rois;
     QDir().mkpath(project_root()+"/config");QSettings settings(config_path(),QSettings::IniFormat);settings.setIniCodec("UTF-8");settings.beginGroup("profiles/"+profile_key());
-    for(int i=0;i<4;++i)settings.setValue(i==0?QStringLiteral("navigation"):"signal_"+QString::number(i-1),QVariantList{rois[i].x,rois[i].y,rois[i].w,rois[i].h});
+    for(int i=0;i<3;++i)settings.setValue("signal_"+QString::number(i),QVariantList{rois[i].x,rois[i].y,rois[i].w,rois[i].h});
     settings.sync();update_settings();advance_generation();dialog.accept();
   });dialog.exec();
 }
@@ -657,9 +651,9 @@ void AdasController::render(double now) {
         if(samples.size()<60000)samples.push_back((rendered_at-stamp.receive_s)*1000);
       }
     };
-    record(views_[0].stamp,last_latency_sequence_,detection_latency_);
-    record(last_geometry_.stamp,last_geometry_latency_sequence_,geometry_latency_);
-    record(vehicle_views_[0].stamp,last_vehicle_latency_sequence_,vehicle_latency_);
+    if(views_[0].observation.traffic_status==adas::Status::Valid)record(views_[0].stamp,last_latency_sequence_,detection_latency_);
+    if(last_geometry_.status==adas::Status::Valid)record(last_geometry_.stamp,last_geometry_latency_sequence_,geometry_latency_);
+    if(vehicle_views_[0].observation.vehicle_status==adas::Status::Valid)record(vehicle_views_[0].stamp,last_vehicle_latency_sequence_,vehicle_latency_);
   }
   if(displayed_.stamp.sequence!=last_presented_sequence_){++shown_;last_presented_sequence_=displayed_.stamp.sequence;}
  }
@@ -695,7 +689,7 @@ void AdasController::refresh_labels(double now) {
   const auto roadblock_status=roadblock.observation.roadblock_status==adas::Status::Missing?QStringLiteral("未配置（模型待补）"):
     status_text(roadblock.observation.roadblock_status)+(!fresh(roadblock.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
   const auto lane_status=status_text(last_geometry_.status)+(last_geometry_.stamp.sequence&&!fresh(last_geometry_.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
-  const auto navigation_status=status_text(last_navigation_.status)+(last_navigation_.stamp.sequence&&!fresh(last_navigation_.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
+  const auto navigation_status=ego_.manual_nav_enabled?QStringLiteral("手动 ")+direction_text(ego_.manual_nav):QStringLiteral("关闭（按 N 切换）");
   const auto signal_status=status_text(last_signal_.status)+(last_signal_.stamp.sequence&&!fresh(last_signal_.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
   capability_label_->setText(QStringLiteral("前视交通：%1 · 车辆：%2%3\n路障识别：%4\n%5\n车道模型：%6 · 导航：%7\n%8\n信号灯：%9").arg(traffic_status,status_text(vehicle.observation.vehicle_status),
     vehicle.stamp.sequence&&!fresh(vehicle.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString(),roadblock_status,QString::fromStdString(views_[0].error_message),lane_status,navigation_status,
@@ -727,7 +721,8 @@ void AdasController::write_report(const QString &path) const {
   report["alarm_illegal_lane_change"]=decision_.alarm_illegal_lane_change;
   report["decision_hint"]=QString::fromStdString(decision_.hint_text);
   report["left_line_type"]=int(last_geometry_.lane.left_type);report["right_line_type"]=int(last_geometry_.lane.right_type);
-  report["navigation_detected"]=last_navigation_.nav.detected;report["navigation_direction"]=int(last_navigation_.nav.dir);
+  report["navigation_source"]=QStringLiteral("manual");report["navigation_detected"]=ego_.manual_nav_enabled;
+  report["navigation_direction"]=int(ego_.manual_nav_enabled?ego_.manual_nav:adas::Direction::None);
   report["mode"]=int(mode_);report["legacy_model_ready"]=legacy_result_.model_ready;
   report["legacy_error"]=QString::fromStdString(legacy_result_.error_message);
   report["simulation_paused"]=ego_.paused;

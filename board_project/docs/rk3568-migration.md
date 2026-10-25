@@ -1,4 +1,4 @@
-# 在其他RK3568设备上编译与运行（2026-10-22）
+# 在其他RK3568设备上编译与运行（2026-10-25）
 
 本工程使用64位AArch64 RKNN运行库，在目标RK3568 Linux本地编译，沿用qmake、Qt5、C++17、OpenCV4；无需GStreamer、VPU或Python训练环境。相同SoC不代表内核、RGA/RKNN BSP、glibc等必然兼容，构建成功与硬件运行分别验证。
 
@@ -34,11 +34,11 @@ cd /tmp
   --report /tmp/adas-report.json --screenshot /tmp/adas-display.png
 ```
 
-`BUILD_DIR`不能覆盖源码、保留程序、系统目录或符号链接路径；`--clean`仅清理具有匹配所有权标记的目录。`--check`不创建输出目录，不要求设备节点存在；默认不会运行sudo/apt。`--no-rga`用于无RGA的诊断/旧模式构建，新ADAS感知明确不可用，不使用CPU图像处理回退。
+`BUILD_DIR`不能覆盖源码、保留程序、系统目录或符号链接路径；`--clean`仅清理具有匹配所有权标记的目录。`--check`不创建输出目录，不要求设备节点存在；默认不会运行sudo/apt。build.sh还检查RGA头文件中`RK_FORMAT_BGR_565`，以正确解释原始高位红RGB565；不支持时自动进入诊断构建。`--no-rga`用于无RGA的诊断/旧模式构建，新ADAS感知明确不可用，不使用CPU图像处理回退。
 
 ## 模型与资源
 
-将训练验证完成的新包置于`models/adas/manifest.json`对应目录，或设置`ADAS_MODEL_MANIFEST`绝对路径。包包含两份权重和manifest，检查SDK、SHA256、输入/输出契约和类别；实际权重目前待提供，程序缺模型保持停车。旧四模型保留不代表新ADAS已就绪。步骤见[模型替换](model-replacement-roadmap.md)。
+将训练验证完成的新包置于`models/adas/manifest.json`对应目录，或设置`ADAS_MODEL_MANIFEST`绝对路径。当前包包含scene.rknn和manifest，schema2且lane=null；检测为8类、已sigmoid的3个39通道NCHW头，检查SDK、SHA256和输入/输出契约。车道未配置时保持Missing，不授权变道。完整车道模型交付后再重新打包两份权重。旧四模型保留不代表新ADAS已就绪。导航仅手动输入；部署不需要PyTorch、ONNX或Toolkit2，已验证RKNN runtime 2.3.2与NPU驱动0.8.2，目标BSP仍须实测。步骤见[模型替换](model-replacement-roadmap.md)。
 
 生成的launcher相对定位自己的RKNN库及资源，并返回源码根运行。可从任意当前目录启动；搬动源码后需重新构建资源链接。只复制一个二进制/launcher不能保证运行依赖完整。
 

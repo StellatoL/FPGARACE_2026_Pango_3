@@ -43,7 +43,7 @@ NeuralModelSpec read_model(const QJsonObject &obj,const QDir &base,bool scene) {
   require(s.width==(scene?640:512)&&s.height==(scene?640:256),"unsupported model input dimensions");
   require(obj.value("quantization").toString()=="int8","only INT8 ADAS models are accepted");
   s.output=obj.value("output").toString();
-  require(s.output==(scene?"yolov5_raw_nchw_v1":"lane_rows_4x96_v1"),"unsupported model output contract");
+  require(scene?(s.output=="yolov5_raw_nchw_v1"||s.output=="yolov5_rk_sigmoid_nchw_v1"):s.output=="lane_rows_4x96_v1","unsupported model output contract");
   s.runtime_api_prefix=obj.value("runtime_api_prefix").toString();
   require(!s.runtime_api_prefix.isEmpty(),"runtime_api_prefix is required");
   if(scene) {
@@ -51,8 +51,8 @@ NeuralModelSpec read_model(const QJsonObject &obj,const QDir &base,bool scene) {
     for(const auto &value:obj.value("classes").toArray()) {
       auto name=value.toString().toStdString();require(!name.empty()&&names.insert(name).second,"empty/duplicate scene class");s.classes.push_back(name);
     }
-    require(s.classes.size()>=12&&s.classes.size()<=64,"unsupported class count");
-    for(const char *name:{"person","vehicle","crosswalk","light_red","light_yellow","light_green","cone","barrier","debris","nav_left","nav_straight","nav_right"})
+    require(s.classes.size()>=8&&s.classes.size()<=64,"unsupported class count");
+    for(const char *name:{"person","vehicle","crosswalk","light_red","light_green","cone","barrier","debris"})
       require(names.count(name),"scene model lacks a mandatory ADAS class");
     const auto anchors=obj.value("anchors").toArray();require(anchors.size()==3,"three anchor heads required");
     for(int h=0;h<3;++h) {
@@ -70,14 +70,17 @@ bool read_neural_manifest(const QString &path,NeuralBundleSpec &spec,QString &er
     require(file.size()<=65536,"manifest too large");QJsonParseError parse;
     const auto document=QJsonDocument::fromJson(file.readAll(),&parse);
     require(parse.error==QJsonParseError::NoError&&document.isObject(),"invalid manifest JSON");
-    const auto obj=document.object();require(obj.value("schema").toInt()==1&&obj.value("target").toString()=="rk3568","manifest schema/target mismatch");
+    const auto obj=document.object();const int schema=obj.value("schema").toInt();
+    require((schema==1||schema==2)&&obj.value("target").toString()=="rk3568","manifest schema/target mismatch");
     NeuralBundleSpec result;result.version=obj.value("version").toString();require(!result.version.isEmpty(),"bundle version is required");
     require(!obj.value("toolkit_version").toString().isEmpty(),"toolkit version is required");
     const auto roi=obj.value("road_roi").toArray();require(roi.size()==4,"road ROI is required");
     result.road_roi={roi[0].toDouble(-1),roi[1].toDouble(-1),roi[2].toDouble(-1),roi[3].toDouble(-1)};
     auto r=result.road_roi;require(std::isfinite(r.x)&&std::isfinite(r.y)&&std::isfinite(r.w)&&std::isfinite(r.h)&&r.x>=0&&r.y>=0&&r.w>0&&r.h>0&&r.x+r.w<=1&&r.y+r.h<=1,"invalid road ROI");
     const auto base=QFileInfo(path).absoluteDir();result.scene=read_model(obj.value("scene").toObject(),base,true);
-    result.lane=read_model(obj.value("lane").toObject(),base,false);
+    const auto lane=obj.value("lane");
+    if(lane.isObject())result.lane=read_model(lane.toObject(),base,false);
+    else require(schema==2&&lane.isNull(),"lane must be configured or explicitly null in schema2");
     spec=std::move(result);return true;
   } catch(const std::exception &e) {error=QString::fromUtf8(e.what());return false;}
 }
@@ -160,20 +163,24 @@ bool validate_neural_outputs(const std::vector<NeuralTensorSpec>&t,bool scene,si
 bool decode_neural_scene(const std::vector<std::vector<float>>&heads,const NeuralModelSpec&spec,std::vector<NeuralDetection>&out,std::string&error) {
   out.clear();error.clear();std::vector<NeuralDetection> candidates;
   auto fail=[&](const char*message){error=message;return false;};
-  const auto classes=spec.classes.size();if(heads.size()!=3||classes<12||classes>64)return fail("scene tensor count/classes invalid");
+  const auto classes=spec.classes.size();if(heads.size()!=3||classes<8||classes>64)return fail("scene tensor count/classes invalid");
+  const bool probabilities=spec.output=="yolov5_rk_sigmoid_nchw_v1";
+  if(!probabilities&&spec.output!="yolov5_raw_nchw_v1")return fail("scene output contract invalid");
   const auto sigmoid=[](float x){return x>=0?1.f/(1.f+std::exp(-x)):std::exp(x)/(1.f+std::exp(x));};
+  const auto activate=[&](float x){return probabilities?x:sigmoid(x);};
   for(size_t h=0;h<3;++h){
     const unsigned stride=8u<<h,side=640/stride,grid=side*side,props=unsigned(classes+5);
     const auto &head=heads[h];if(head.size()!=3*props*grid||!finite(head))return fail("scene tensor shape/values invalid");
+    if(probabilities&&std::any_of(head.begin(),head.end(),[](float x){return x<0||x>1;}))return fail("RK sigmoid output outside probability range");
     for(unsigned a=0;a<3;++a)for(unsigned cell=0;cell<grid;++cell){
-      const unsigned base=a*props*grid+cell;const float obj=sigmoid(head[base+4*grid]);if(obj<.25f)continue;
+      const unsigned base=a*props*grid+cell;const float obj=activate(head[base+4*grid]);if(obj<.25f)continue;
       int best=0;float raw=head[base+5*grid];
       for(unsigned c=1;c<classes;++c)if(head[base+(5+c)*grid]>raw){raw=head[base+(5+c)*grid];best=int(c);}
-      const float score=obj*sigmoid(raw);if(score<.25f)continue;
+      const float score=obj*activate(raw);if(score<.25f)continue;
       if(candidates.size()>=1024)return fail("scene candidate limit exceeded before NMS");
-      const float x=(sigmoid(head[base])*2-.5f+cell%side)*stride;
-      const float y=(sigmoid(head[base+grid])*2-.5f+cell/side)*stride;
-      const float sw=sigmoid(head[base+2*grid])*2,sh=sigmoid(head[base+3*grid])*2;
+      const float x=(activate(head[base])*2-.5f+cell%side)*stride;
+      const float y=(activate(head[base+grid])*2-.5f+cell/side)*stride;
+      const float sw=activate(head[base+2*grid])*2,sh=activate(head[base+3*grid])*2;
       const float w=sw*sw*spec.anchors[h][a*2],hh=sh*sh*spec.anchors[h][a*2+1];
       if(!std::isfinite(w)||!std::isfinite(hh)||w<=0||hh<=0)return fail("scene anchor/box invalid");
       candidates.push_back({best,{x-w/2,y-hh/2,x+w/2,y+hh/2},score});

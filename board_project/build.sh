@@ -170,7 +170,7 @@ verify_toolchain() {
   # Match the current .pro feature gate, including all three headers used by C++.
   if [[ "$NO_RGA" == 0 ]]; then
     if [[ ! -r /usr/include/rga/rga.h || ! -r /usr/include/rga/RgaApi.h || ! -r /usr/include/rga/drmrga.h ]] ||
-        ! printf '#include <rga/RgaApi.h>\n#include <rga/drmrga.h>\n#include <rga/rga.h>\n' |
+        ! printf '#include <rga/RgaApi.h>\n#include <rga/drmrga.h>\n#include <rga/rga.h>\nint main() { return RK_FORMAT_BGR_565; }\n' |
           g++ -fsyntax-only -x c++ - >/dev/null 2>&1; then
       NO_RGA=1
     fi

@@ -25,8 +25,48 @@ adas::LaneTensorData road(bool gaps) {
   }
   return d;
 }
+void eight_class_rk_sigmoid_head() {
+  adas::NeuralModelSpec spec;spec.output="yolov5_rk_sigmoid_nchw_v1";
+  spec.classes={"person","vehicle","crosswalk","light_red","light_green","cone","barrier","debris"};
+  for(auto &anchors:spec.anchors)anchors={10,13,16,30,33,23};
+  std::vector<std::vector<float>> heads;
+  for(int stride:{8,16,32})heads.emplace_back(3*13*(640/stride)*(640/stride),0.f);
+  std::vector<adas::NeuralDetection> out;std::string error;
+  assert(adas::decode_neural_scene(heads,spec,out,error)&&out.empty());
+  const int grid=80*80;
+  for(int c=0;c<4;++c)heads[0][c*grid]=.5f;
+  heads[0][4*grid]=.3f;heads[0][8*grid]=.3f;
+  assert(adas::decode_neural_scene(heads,spec,out,error)&&out.empty()); // .09, never sigmoid twice.
+  heads[0][4*grid]=.9f;heads[0][8*grid]=.9f;
+  assert(adas::decode_neural_scene(heads,spec,out,error)&&out.size()==1);
+  assert(out[0].class_id==3&&std::abs(out[0].confidence-.81f)<1e-5f);
+  // Identical overlapping candidates in both export contracts must have the
+  // same boxes, product score and class-aware NMS result.
+  for(auto &head:heads)std::fill(head.begin(),head.end(),.001f);
+  for(int a=0;a<2;++a) {
+    for(int c=0;c<4;++c)heads[0][(a*13+c)*grid]=.5f;
+    heads[0][(a*13+4)*grid]=a==0?.9f:.8f;
+    heads[0][(a*13+8)*grid]=.9f;
+  }
+  spec.anchors[0]={10,13,10,13,33,23};
+  assert(adas::decode_neural_scene(heads,spec,out,error)&&out.size()==1);
+  auto logits=heads;
+  for(auto &head:logits)for(auto &value:head)value=std::log(value/(1-value));
+  auto raw_spec=spec;raw_spec.output="yolov5_raw_nchw_v1";
+  std::vector<adas::NeuralDetection> raw;
+  assert(adas::decode_neural_scene(logits,raw_spec,raw,error)&&raw.size()==out.size());
+  assert(raw[0].class_id==out[0].class_id&&std::abs(raw[0].confidence-out[0].confidence)<1e-5f);
+  assert(std::abs(raw[0].box.left-out[0].box.left)<1e-5f&&std::abs(raw[0].box.right-out[0].box.right)<1e-5f);
+  assert(std::abs(raw[0].box.top-out[0].box.top)<1e-5f&&std::abs(raw[0].box.bottom-out[0].box.bottom)<1e-5f);
+  heads[0][0]=1.1f;assert(!adas::decode_neural_scene(heads,spec,out,error)&&out.empty());
+  heads[0][0]=.5f;spec.output="unknown";assert(!adas::decode_neural_scene(heads,spec,out,error));
+  std::vector<adas::NeuralTensorSpec> shape{{"p3",{1,39,80,80}},{"p4",{1,39,40,40}},{"p5",{1,39,20,20}}};
+  assert(adas::validate_neural_outputs(shape,true,8,error));
+  shape[0].shape[1]=42;assert(!adas::validate_neural_outputs(shape,true,8,error));
+}
 int main(int argc,char **argv) {
   QCoreApplication app(argc,argv);
+  eight_class_rk_sigmoid_head();
   adas::LaneInfo lane;std::string error;
   auto d=road(true);
   assert(adas::decode_neural_lane(d,{0,.42,1,.58},1280,720,lane,error));
@@ -77,9 +117,26 @@ int main(int argc,char **argv) {
   auto write=[&] {assert(f.open(QIODevice::WriteOnly|QIODevice::Truncate));f.write(QJsonDocument(manifest).toJson());f.close();};
   write();assert(adas::read_neural_manifest(f.fileName(),bundle,message));
   assert(bundle.scene.classes.size()==12&&bundle.lane.width==512);
+  const auto full_manifest=manifest;
+  QJsonArray eight;for(const char *name:{"person","vehicle","crosswalk","light_red","light_green","cone","barrier","debris"})eight.append(name);
+  scene["classes"]=eight;scene["output"]="yolov5_rk_sigmoid_nchw_v1";
+  manifest["schema"]=2;manifest["scene"]=scene;manifest["lane"]=QJsonValue(QJsonValue::Null);write();
+  assert(adas::read_neural_manifest(f.fileName(),bundle,message));
+  assert(bundle.scene.classes.size()==8&&bundle.lane.path.isEmpty());
+  manifest.remove("lane");write();assert(!adas::read_neural_manifest(f.fileName(),bundle,message));
+  manifest["lane"]=false;write();assert(!adas::read_neural_manifest(f.fileName(),bundle,message));
+  manifest["lane"]=QJsonValue(QJsonValue::Null);manifest["schema"]=1;write();
+  assert(!adas::read_neural_manifest(f.fileName(),bundle,message));
+  manifest["schema"]=2;
+  eight.removeLast();scene["classes"]=eight;manifest["scene"]=scene;write();
+  assert(!adas::read_neural_manifest(f.fileName(),bundle,message)); // No debris capability.
+  manifest=full_manifest;scene=manifest["scene"].toObject();
+
   scene["sha256"]=QString(64,'0');manifest["scene"]=scene;write();
   assert(!adas::read_neural_manifest(f.fileName(),bundle,message));
   scene["sha256"]=hash;classes.removeLast();scene["classes"]=classes;manifest["scene"]=scene;write();
+  assert(adas::read_neural_manifest(f.fileName(),bundle,message)); // Visual navigation is optional.
+  classes.removeAt(8);scene["classes"]=classes;manifest["scene"]=scene;write();
   assert(!adas::read_neural_manifest(f.fileName(),bundle,message));
   scene["file"]="../scene.rknn";manifest["scene"]=scene;write();
   assert(!adas::read_neural_manifest(f.fileName(),bundle,message));
@@ -88,7 +145,7 @@ int main(int argc,char **argv) {
   assert(adas::validate_neural_outputs(attrs,false,0,error));
   std::swap(attrs[0],attrs[1]);assert(!adas::validate_neural_outputs(attrs,false,0,error));
   std::swap(attrs[0],attrs[1]);attrs[0].shape={1,96,4};assert(!adas::validate_neural_outputs(attrs,false,0,error));
-  adas::NeuralModelSpec scene_spec;scene_spec.classes.resize(12);
+  adas::NeuralModelSpec scene_spec;scene_spec.output="yolov5_raw_nchw_v1";scene_spec.classes.resize(12);
   for(auto &head:scene_spec.anchors)head={10,13,16,30,33,23};
   std::vector<std::vector<float>> heads;
   for(int stride:{8,16,32})heads.emplace_back(3*17*(640/stride)*(640/stride),-20);

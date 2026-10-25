@@ -1,6 +1,6 @@
 # 两个ADAS模型的训练、转换与部署接入规范
 
-版本：2026-10-22；对应当前工程的`yolov5_raw_nchw_v1`及`lane_rows_4x96_v1`契约。本文是训练交付依据，替代之前简略的模型替换建议。最终权重仍由用户训练，本工程继续留空。
+版本：2026-10-25。当前检测模型采用airockchip/yolov5的8类`yolov5_rk_sigmoid_nchw_v1`；车道沿用`lane_rows_4x96_v1`。检测模型已实际转换为RK3568 INT8并打包到`models/adas`，车道权重仍待提供。导航改为手动输入，不要求黄灯或导航检测类别。转换成功不表示赛题识别精度通过。
 
 **按本文完成导出、INT8转换、打包及板端验收后，可通过模型包路径接入，无需修改FPGA通信或ARM后处理。直接接入的前提是输出语义也符合约定；仅文件名、形状或转换成功不能证明兼容，更不能证明识别精度。**
 
@@ -8,20 +8,20 @@
 
 | 项目 | 模型A：统一目标检测 | 模型B：轻量车道 |
 |---|---|---|
-| 建议结构 | YOLOv5n，YOLOv5 v7.0检测头 | 本工程MobileNetV2-0.35及四个任务头 |
+| 建议结构 | airockchip/yolov5 YOLOv5n、ReLU、`--rknpu`检测头 | 本工程MobileNetV2-0.35及四个任务头 |
 | 包内名称 | `scene.rknn` | `lane.rknn` |
 | 固定batch | 1 | 1 |
-| ONNX输入 | `rgb`，float32，NCHW `[1,3,640,640]`，0..1 | `rgb`，float32，NCHW `[1,3,256,512]`，0..1 |
+| ONNX输入 | `images`，float32，NCHW `[1,3,640,640]`，0..1 | `rgb`，float32，NCHW `[1,3,256,512]`，0..1 |
 | ARM提交给RKNN的输入 | uint8，NHWC `[1,640,640,3]`，RGB，0..255 | uint8，NHWC `[1,256,512,3]`，RGB，0..255 |
 | RKNN量化 | RK3568 INT8 | RK3568 INT8 |
 | ARM输入适配 | RGA裁剪、等比缩放、114填充 | RGA道路ROI裁剪，直接缩放到512×256 |
-| 输出 | 3个sigmoid前的NCHW原始检测头 | 4个固定名称、固定顺序的结构化张量 |
-| 运行范围 | 前/右/后/左分别推理；前视灯色及导航ROI复用同一模型 | 只处理前视 |
+| 输出 | 3个已sigmoid的NCHW检测头 | 4个固定名称、固定顺序的结构化张量 |
+| 运行范围 | 前/右/后/左分别推理；前视灯色ROI复用同一模型 | 只处理前视 |
 | 需要随权重交付 | `scene.json`，含真实类别顺序和真实像素锚点 | `lane.json`，含训练时的道路ROI |
 
 框架可以采用满足相同语义和性能要求的其他轻量主干，但现有车道导出脚本只接受本工程`LaneNetwork`检查点；其他实现需由训练方导出同样的ONNX接口。普通YOLOv8/YOLO11、分割掩码、UFLD原版列分类输出均不能直接替换现有输出契约。
 
-最终部署目录只需三件文件：
+完整双模型包包含下列三件文件；当前仅检测模型时，省略lane.rknn，manifest使用schema2且显式`lane: null`。不允许创建空文件或使用旧模型占位：
 
 ```text
 adas-v1/
@@ -32,84 +32,58 @@ adas-v1/
 
 训练交付归档另需保留：原始检查点、两份ONNX、两份JSON metadata、训练类别表/标注规范、转换环境版本与日志、校准集清单和独立测试报告。所有文件应对应同一训练版本。
 
-## 2. 模型A的类别与标注
+## 2. 模型A的八类和检测头
 
-### 2.1 必需12类
+### 2.1 与实际权重一致的类别
 
-推荐直接使用[12类YOLOv5数据配置](model-contract/scene-12-classes.yaml)，修改其`path`为训练PC数据根目录。
+使用[8类数据配置](model-contract/scene-8-classes.yaml)。本次检查点的真实顺序如下，训练标签、检查点、scene.json和manifest必须一致，不能仅修改JSON来重排模型输出。
 
-| 推荐class_id | 精确名称 | 标注对象与边界 |
+| class_id | 精确名称 | 对象 |
 |---:|---|---|
-| 0 | `person` | 行人；正常行走、横穿、遮挡、远处小目标均需覆盖 |
-| 1 | `vehicle` | 将汽车、货车、公交、自行车、摩托等需参与避障的车辆合并为一类 |
-| 2 | `crosswalk` | 整组斑马线的区域框；不是将每条白条分别当作一个斑马线 |
-| 3 | `light_red` | 当前亮起的红色灯面/有效信号单元 |
-| 4 | `light_yellow` | 当前亮起的黄色灯面/有效信号单元 |
-| 5 | `light_green` | 当前亮起的绿色灯面/有效信号单元 |
-| 6 | `cone` | 交通锥等锥形路障 |
-| 7 | `barrier` | 路栏、水马、施工隔离等实体路障 |
-| 8 | `debris` | 掉落物、散落障碍等；需要真实正例与负例 |
-| 9 | `nav_left` | 导航区域中当前有效的左转/向左指令箭头 |
-| 10 | `nav_straight` | 导航区域中当前有效的直行指令箭头 |
-| 11 | `nav_right` | 导航区域中当前有效的右转/向右指令箭头 |
+| 0 | `person` | 行人，需覆盖横穿、远处和遮挡 |
+| 1 | `vehicle` | 参与避障的车辆，细分归并规则由训练集统一 |
+| 2 | `crosswalk` | 整组斑马线区域 |
+| 3 | `light_red` | 有效红灯面/信号单元 |
+| 4 | `light_green` | 有效绿灯面/信号单元 |
+| 5 | `cone` | 交通锥 |
+| 6 | `barrier` | 路栏、水马、施工隔离 |
+| 7 | `debris` | 路面掉落物；需真实正负例和独立指标 |
 
-上述编号是推荐数据集顺序；加载器按metadata里的`classes`数组解释模型类别，允许其他顺序，但**训练YAML、检查点、scene.json、manifest必须一致**。不能对JSON类别排序后继续使用原权重。名称区分大小写，不接受`car`代替`vehicle`、`pedestrian`代替`person`等别名。重复名称不合法；当前允许总类别数12..64。
+加载器要求至少这8个精确名称且无重复，总数8..64；本次官方RK导出器严格验收8类。内部障碍编号为person→1、vehicle→10、cone/barrier/debris→11，不能与训练class_id混淆。黄灯及nav_left/nav_straight/nav_right不再是必需项；保留的旧raw张量兼容路径不会启用视觉导航。导航只接收手动方向，N键依次关闭→左→直行→右→关闭；路段变道仍受同一车道与障碍安全判断约束。
 
-ARM将`person`映射为内部障碍类别1，`vehicle`映射为10，`cone/barrier/debris`统一映射为11。这些内部编号不是训练class_id。
+### 2.2 标注和数据要求
 
-缺少必需类别时模型包会被拒绝。COCO预训练只能作为初始化来源，缺少专用灯色、路障和导航类别，不能直接用于最终ADAS。`Unknown`、未亮灯和背景不用添加伪类别；无可靠信号时不输出对应正例。
+- YOLO标签每行为`class_id cx cy width height`，相对原图归一化；斑马线与行人分别标框，保留脚部关系。
+- 四宫格先分离四视角，混合单路HDMI、侧后视、空场景和灯色ROI样本。不要将拼接全图当成一幅前视训练图。
+- 灯色框中心需要稳定落入对应车道灯ROI；提供广告灯、路灯、刹车灯等负例。三组灯ROI默认相同，仅适用共用灯；独立车道灯必须按素材设置。
+- 覆盖夜间、强光、遮挡、远行人、小灯、RGB565与实际FPGA处理状态；按完整路线划分训练、验证、独立测试，避免相邻帧泄漏。
+- 导航UI、道路箭头和黄灯不添加到本次8类标签。手动导航与感知准确率分别验收。
 
-### 2.2 可选的9类方向灯
+### 2.3 RK官方输出契约
 
-可在12类后增加以下精确名称，不替代必需的三类通用灯色：
+标识`yolov5_rk_sigmoid_nchw_v1`，batch固定为1，stride依次8/16/32，每头3个锚点。当前C=8：
 
-```text
-light_red_left       light_red_straight       light_red_right
-light_yellow_left    light_yellow_straight    light_yellow_right
-light_green_left     light_green_straight     light_green_right
-```
+| 索引 | 本次ONNX/RKNN输出名 | 输出形状 |
+|---:|---|---|
+| 0 | `output0` | `[1,39,80,80]` |
+| 1 | `286` | `[1,39,40,40]` |
+| 2 | `288` | `[1,39,20,20]` |
 
-方向表示信号灯允许的车辆行进方向。通用灯需要在UI中设置左、直、右车道灯ROI；方向灯也必须落在相应ROI，不能仅凭类别跨区域授权。默认三组灯ROI相同，适合共用灯；独立车道灯必须按素材分别配置。多个灯冲突时现实现按红、黄、绿优先，不应用灯壳大框包含多种灯色。
-
-其他额外类别虽然可以占用输出通道，但不会自动获得决策能力。限速牌、停止牌、掉头、多分支导航等不属于本版本可直接接入能力；当前限速由配置/人工输入。
-
-### 2.3 数据和标注约定
-
-- YOLO标签为每行`class_id cx cy width height`，坐标相对于该训练图片宽高归一化；框原点在左上，x向右、y向下。
-- 输入覆盖前/后/左/右视角，以及单路HDMI素材。四宫格训练图片应先在PC按布局取出各视角；不能将拼接画布当成一个前视目标尺度。
-- 灯色标注统一采用有效灯面/信号单元，保证其框中心能稳定落入配置ROI；夜间光晕、路灯、广告灯、刹车灯应提供负例。
-- 导航箭头来自素材中的导航UI，标注当前有效指令；道路画线箭头、交通标志、背景蓝绿色不标为导航。需要同时提供整幅画面及导航/灯色放大ROI的样本分布。
-- 类别定义应互斥稳定，避免同一物体在`barrier/debris`之间随意切换；斑马线和行人分别标框，保留行人脚部与斑马线的位置关系。
-- 数据覆盖强光、夜间、遮挡、小灯/远行人、RGB565颜色精度和FPGA实际处理状态。按完整路线/视频片段划分训练、验证和独立测试，禁止相邻帧泄漏。
-- 水平翻转涉及导航或方向灯时，必须交换left/right类别；只翻图而不换语义会产生错误训练目标。
-
-### 2.4 固定输出契约
-
-标识：`yolov5_raw_nchw_v1`。设类别数为`C`，每个检测头有3个锚点：
-
-| 输出索引 | 导出名 | stride | RKNN输出形状 | C=12时 |
-|---:|---|---:|---|---|
-| 0 | `p3` | 8 | `[1,3*(C+5),80,80]` | `[1,51,80,80]` |
-| 1 | `p4` | 16 | `[1,3*(C+5),40,40]` | `[1,51,40,40]` |
-| 2 | `p5` | 32 | `[1,3*(C+5),20,20]` | `[1,51,20,20]` |
-
-每个锚点的通道顺序为`tx,ty,tw,th,objectness,class_0,...,class_(C-1)`，三个锚点按通道依次连接。**必须保留卷积原始logits；不含sigmoid、框解码、拼接预测、NMS或额外辅助输出。** 不接受`[1,25200,C+5]`、5D permuted、NHWC检测头、端到端NMS结果。C=21时每头通道应为78。
-
-当前加载器严格检查检测头数量、索引、形状和NCHW格式；检测头名字可被转换器重命名，但导出名应保留`p3/p4/p5`便于核对。不要把这种名字宽容误用到车道输出，车道名字是强校验项。
-
-`scene.json`的`anchors`必须是训练检查点实际锚点：3行，每行`[w0,h0,w1,h1,w2,h2]`，单位为640×640输入中的像素，按stride8、16、32和各头锚点顺序排列。不能填写除以stride的网格单位锚点，也不能在autoanchor更新后沿用旧锚点。加载器要求每个值有限、`0 < value <= 1280`。
-
-ARM解码的数值约定为：
+输出名可能随上游图编号变化；检测输出按形状与顺序强校验。通道按3个锚点依次拼接，各锚点为`x,y,w,h,objectness,class_0,...,class_7`。**所有通道已经sigmoid，ARM不重复sigmoid**。不接受NHWC头、5D置换、`[1,25200,13]`、已解码框或内置NMS输出。
 
 ```text
-cx = (sigmoid(tx)*2 - 0.5 + grid_x) * stride
-cy = (sigmoid(ty)*2 - 0.5 + grid_y) * stride
-w  = (sigmoid(tw)*2)^2 * anchor_w
-h  = (sigmoid(th)*2)^2 * anchor_h
-score = sigmoid(objectness) * sigmoid(best_class_logit)
+cx = (x*2 - 0.5 + grid_x) * stride
+cy = (y*2 - 0.5 + grid_y) * stride
+w  = (w*2)^2 * anchor_w
+h  = (h*2)^2 * anchor_h
+score = objectness * max(class_probability)
 ```
 
-最终乘积阈值0.25，按类别NMS的IoU阈值0.45；导航再要求score≥0.5。NMS前最多1024个候选，NMS后最多300框，超过任一上限本次结果失败；不是截断后继续授权。NaN/Inf同样失败。训练和INT8评测必须按上述后处理统计，不以另一套YOLO阈值的结果代替板端结果。
+所有概率须有限且位于[0,1]。乘积阈值0.25，按类别NMS IoU0.45，候选上限1024、输出上限300，超限判失败。低于阈值的空检测与模型不可用有不同状态；不会因类别精度偏弱降低阈值或放松变道条件。
+
+锚点来自实际检查点，单位为640输入图像素，按头与锚点顺序排列。当前为`[[10,13,16,30,33,23],[30,61,62,45,59,119],[116,90,156,198,373,326]]`。换权重后重新提取，不把网格单位或旧autoanchor结果写入metadata。
+
+原`yolov5_raw_nchw_v1`只用于显式声明的sigmoid前logits兼容模型，ARM按其契约做一次sigmoid；严禁仅改output名称来混用两种输出。`export_models.py scene`保留该高级兼容入口，本次权重必须使用下一节的`export_rk_scene.py`官方路径。
 
 ## 3. 模型B的候选、标注与输出
 
@@ -221,7 +195,7 @@ dst_x = (640-dw)/2 整数除法
 dst_y = (640-dh)/2 整数除法
 ```
 
-640×360与1280×720完整前视最终内容区均为640×360，上下各140像素填充。导航默认ROI`[0,0,0.32,0.30]`；各车道灯默认ROI`[0,0,1,0.5]`，实际可配置。灯色任务裁剪三组灯ROI的外包矩形，再用同一检测模型推理；导航任务裁剪导航ROI。训练/量化不能只准备全帧尺度。
+640×360与1280×720完整前视最终内容区均为640×360，上下各140像素填充。各车道灯默认ROI`[0,0,1,0.5]`，实际可配置。灯色任务裁剪三组灯ROI的外包矩形，再用同一检测模型推理；视觉导航任务已关闭。训练/量化不能只准备全帧尺度。
 
 ONNX只接受已除255的float32 RGB。RKNN转换设置`mean_values=[[0,0,0]]`、`std_values=[[255,255,255]]`，板端提交RGB uint8，并保持`pass_through=0`，由RKNN执行输入适配。**不要在ARM额外除255；不要在ONNX图里再嵌入一次除255；不要改用BGR或ImageNet mean/std。**
 
@@ -248,22 +222,22 @@ PC端优先建立与上述运行库配套的RKNN-Toolkit2 2.3.2转换环境，�
 
 ## 6. 在训练PC导出ONNX
 
-在PC准备YOLOv5 v7.0、与检查点兼容的PyTorch/torchvision、ONNX环境，固定版本并归档依赖。车道使用本工程`tools/adas_models/lane_model.py`；不要在RK3568安装训练环境。
+在PC或已有转换环境准备airockchip/yolov5、与检查点兼容的PyTorch/torchvision、ONNX环境，固定版本并归档依赖。车道使用本工程`tools/adas_models/lane_model.py`；板卡编译/部署不需要训练环境。
 
 以下命令均从本工程源码根运行，示例绝对路径需换成PC实际路径。
 
 ```bash
 # YOLOv5训练：在其仓库目录运行；超参数只是起点。
 python train.py --img 640 --batch 16 --epochs 150 \
-  --data /path/to/ADAS/docs/model-contract/scene-12-classes.yaml \
+  --data /path/to/ADAS/docs/model-contract/scene-8-classes.yaml \
   --cfg models/yolov5n.yaml --weights yolov5n.pt --name adas_scene
 ```
 
 训练完成后返回本工程源码根：
 
 ```bash
-python tools/adas_models/export_models.py scene \
-  --yolov5-repo /pc/yolov5-v7.0 --weights /pc/training/best.pt \
+python tools/adas_models/export_rk_scene.py \
+  --yolov5-repo /pc/airockchip-yolov5 --weights /pc/training/best.pt \
   --output /pc/export/scene.onnx
 
 python tools/adas_models/train_lane.py \
@@ -274,7 +248,7 @@ python tools/adas_models/export_models.py lane \
   --weights /pc/export/lane.pt --output /pc/export/lane.onnx
 ```
 
-导出器使用opset12、batch1和固定尺寸，不设置动态轴。检测导出器直接取三层末端卷积，生成sigmoid前原始头，并从检查点提取真实classes/anchors；车道导出器保存固定输出名字及检查点ROI。生成文件应成对交付：
+导出器使用opset12、batch1和固定尺寸，不设置动态轴。RK检测导出器调用未修改的上游`export.py --rknpu`，生成已sigmoid的三头，并验证8类、真实anchors、输出形状及末端Sigmoid算子；车道导出器保存固定输出名字及检查点ROI。生成文件应成对交付：
 
 ```text
 scene.onnx + scene.json
@@ -289,7 +263,7 @@ ONNX先检查结构、输出顺序及相同输入下PyTorch/ONNX数值一致性�
 
 使用实际/近似实际FPGA RGB565成像分布，优先采样真实链路帧。校准图在PC预先处理为**网络最终输入大小**：
 
-- scene：640×640 RGB，含114 padding；混合四视角全帧、灯色ROI外包裁剪和导航ROI裁剪，覆盖必需类别与夜间/强光/空场景。
+- scene：640×640 RGB，含114 padding；混合四视角全帧和灯色ROI外包裁剪，覆盖必需类别与夜间/强光/空场景。
 - lane：从原始前视取与训练metadata一致的实际ROI，模拟RGB565分布后直接缩放512×256；不要使用全帧、检测letterbox或已经归一化保存的图。
 - 建议从数百张有代表性的样本起步，数量依精度/覆盖评估，不将张数当硬性通过标准。图像文件为正常RGB色彩编码，每个清单一行一个绝对文件路径；清单中不是.mp4、目录或标签文件。
 - 校准保存为0..255图像，由转换配置做除255；不要先存0..1图再除255。使用OpenCV制作时需确认其BGR内存与保存/转换的RGB语义一致。
@@ -331,15 +305,15 @@ RKNN输出通过普通`RKNN_QUERY_OUTPUT_ATTR`查询及`rknn_outputs_get(want_fl
 
 | 字段 | 要求 |
 |---|---|
-| `output` | `yolov5_raw_nchw_v1` |
+| `output` | 当前`yolov5_rk_sigmoid_nchw_v1`；高级兼容路径可显式声明raw格式 |
 | `width` / `height` | 640 / 640 |
-| `classes` | 与权重完全一致的名称数组，含必需12类，总数≤64 |
+| `classes` | 与权重完全一致的名称数组，含必需8类，总数≤64 |
 | `anchors` | 3×6真实像素锚点 |
 | `normalization` | 导出器记录mean `[0,0,0]`、std `[255,255,255]` |
 
 `lane.json`至少包含`output='lane_rows_4x96_v1'`、`width=512`、`height=256`及训练时的`road_roi`；导出器同样记录normalization。打包工具会生成固定mean/std，不能依靠修改metadata使其他归一化模型兼容。
 
-两份真实权重及metadata必须齐全，打包和manifest解析都会检查两份文件；不能以空文件、旧模型或伪metadata占位。
+检测权重和metadata必须齐全；车道权重与metadata可成对省略，此时打包器产生schema2的`lane: null`，车道保持Missing、不执行车道NPU、不授权变道。schema1仍要求真实车道模型。不能以空文件、旧模型或伪metadata占位。
 
 在空目录生成新包，不覆盖已有版本：
 
@@ -351,13 +325,13 @@ python tools/prepare_adas_bundle.py \
   --runtime-api-prefix '2.3.2 (' --output /pc/export/adas-v1
 ```
 
-上述版本参数仅适用于本节实测基线及实际使用该Toolkit的情况；其他设备按查询结果和真实转换版本填写。打包器验证metadata和文件边界，复制两份模型、计算SHA256并生成manifest；**它不解析RKNN内部图，也不证明SDK、张量或精度已通过**。
+上述版本参数仅适用于本节实测基线及实际使用该Toolkit的情况；其他设备按查询结果和真实转换版本填写。打包器验证metadata和文件边界，复制实际提供的模型、计算SHA256并生成manifest；**它不解析RKNN内部图，也不证明SDK、张量或精度已通过**。
 
 manifest字段要求：
 
 | 范围 | 字段 | 约束 |
 |---|---|---|
-| 顶层 | `schema` / `target` | 1 / `rk3568` |
+| 顶层 | `schema` / `target` | 新包2 / `rk3568`（兼容旧schema1） |
 | 顶层 | `version` / `toolkit_version` | 实际非空版本信息，用于归档 |
 | 顶层 | `road_roi` | 与lane训练相同的有效`[x,y,w,h]` |
 | scene/lane | `file` | 包内相对路径，不含`..`，不经符号链接逃出包目录 |
@@ -374,8 +348,20 @@ manifest字段要求：
 
 ```bash
 cd /pc/export/adas-v1
-sha256sum manifest.json scene.rknn lane.rknn > SHA256SUMS
+sha256sum manifest.json *.rknn > SHA256SUMS
 ```
+
+当前仅检测模型的打包示例（不传lane两项）：
+
+```bash
+python3 tools/prepare_adas_bundle.py \
+  --scene models/adas8-candidate-2026-10-25/scene.rknn \
+  --scene-metadata models/adas8-candidate-2026-10-25/scene.json \
+  --version adas8-candidate-2026-10-25 --toolkit-version 2.3.2 \
+  --runtime-api-prefix '2.3.2 (' --output /path/to/empty/adas8-bundle
+```
+
+后续车道训练完成，将真实lane.rknn/lane.json一起重新打成完整版本包。当前采用的校准样本只有project_video.mp4中96帧白天道路；12帧独立抽样仅验证数值接口，不证明八类准确率。必须用覆盖全部类别、视角、灯色ROI和困难光照的代表集重新量化验收。详细哈希和实际测试见[八类验证记录](adas8-verification.md)。
 
 ## 9. RK3568部署、替换与回滚
 
@@ -404,7 +390,7 @@ export ADAS_MODEL_MANIFEST=/opt/adas-models/adas-v1/manifest.json
 
 ### A. 接口验收
 
-1. 包和两份模型hash一致；查询到目标板SDK、输入/输出数目、形状、名字、格式和量化属性符合本文。
+1. 包和已配置模型hash一致；查询到目标板SDK、输入/输出数目、形状、名字、格式和量化属性符合本文。
 2. 实际RGA自检成功，模型初始化、输入设置、run、输出反量化均无错误。只做query成功还没有执行推理。
 3. 使用已知RGB色块/空间标记样本经正式HDMI链路检查通道、裁剪、padding和坐标回映射，再测真实道路样本；测试素材由PC播放。
 4. manifest缺失显示未配置；hash、SDK、张量、RGA或推理失败显示失败；成功推理无目标才是有效空。任何能力缺失不得当作侧向无障碍。
@@ -412,7 +398,7 @@ export ADAS_MODEL_MANIFEST=/opt/adas-models/adas-v1/manifest.json
 ### B. 精度与决策验收
 
 - `project_video.mp4`作为固定对比片段，由电脑播放经HDMI输入；另取未参与训练的完整道路片段测试。
-- 检测报告逐类precision/recall、mAP及红绿灯/导航混淆，不仅报总mAP；包含远目标、夜间、侧后视、路障和空场景。
+- 检测报告逐类precision/recall、mAP及红绿灯混淆，不仅报总mAP；包含远目标、夜间、侧后视、路障和空场景。
 - 车道报告本车边界身份、位置误差、实虚线联合正确率和未知率；Unknown计入分母，尤其覆盖右虚线、邻道、斑马线、遮挡和弯道。
 - 验证红停绿行/强制闯红报警、虚线安全变道、实线保持/强制变道报警、导航跟随和行人/路障停车。人工停车、灯控、紧急停车按原优先级约束。
 - 四路目标侧的人员、车辆和路障观测都必须有效、新鲜且在转向请求之后；前视放大仍应否决缺失侧向证据。不能靠延长TTL或削弱安全条件提高授权率。
@@ -426,9 +412,9 @@ export ADAS_MODEL_MANIFEST=/opt/adas-models/adas-v1/manifest.json
 | 四路转向scene | 目标侧4Hz，另两个非前视各1Hz；前视8Hz |
 | 四路lane | 前视10Hz |
 | 单路scene/lane | 各12Hz |
-| 前视灯色ROI/导航ROI | 各4Hz，复用scene模型 |
+| 前视灯色ROI | 4Hz，复用scene模型 |
 
-令完整一次scene任务含RGA/推理/取输出/解码的耗时为Ts，lane为Tl，粗预算四路`22*Ts+10*Tl`、单路`20*Ts+12*Tl`，单位ms/s。Ts=35ms、Tl=15ms时分别920/880ms/s，仅是估算，线程、拷贝和显示仍需余量。所有任务串行共享NPU，不能拿单模型纯rknn_run的峰值FPS宣称四路同时达标。只调度最新帧，不靠排队掩盖延迟。
+令完整一次scene任务含RGA/推理/取输出/解码的耗时为Ts，lane为Tl，粗预算四路`18*Ts+10*Tl`、单路`16*Ts+12*Tl`，单位ms/s。Ts=35ms、Tl=15ms时分别780/740ms/s，仅是估算，线程、拷贝和显示仍需余量。所有任务串行共享NPU，不能拿单模型纯rknn_run的峰值FPS宣称四路同时达标。只调度最新帧，不靠排队掩盖延迟。
 
 同时记录预览fps、每路有效推理频率、失败数、结果年龄、丢帧、内存和30分钟稳定性。前视有效期≤500ms、侧后视≤1.5s。25fps预览、ARM收帧至OSD P95≤250ms、危险至报警P95≤500ms均须实测；4Hz三次确认本身约500ms，不能从总延迟中扣除确认等待。完整输入到显示延迟另用外部测量。
 
@@ -475,7 +461,7 @@ open-adas/openpilot只提供标定、危险区和状态隔离的设计参考，�
 
 ## 附录A：板端SDK与张量只读查询
 
-以下程序使用工程头文件/运行库。保存为`/tmp/adas-model-sdk-probe.cpp`，在目标工程根目录编译；加载模型并打印普通逻辑张量属性，不做推理，不访问FPGA。旧模型可用于查询SDK，旧模型输出不需要、也不应被视为满足新的12类契约。
+以下程序使用工程头文件/运行库。保存为`/tmp/adas-model-sdk-probe.cpp`，在目标工程根目录编译；加载模型并打印普通逻辑张量属性，不做推理，不访问FPGA。旧模型可用于查询SDK，旧模型输出不需要、也不应被视为满足新的8类契约。
 
 ```cpp
 #include <rknn_api.h>

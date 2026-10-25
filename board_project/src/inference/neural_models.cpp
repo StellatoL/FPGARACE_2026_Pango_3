@@ -94,11 +94,13 @@ bool NeuralModels::initialize(const QString &root) {
     state_->scene_error=state_->lane_error=error;
     state_->scene_status=state_->lane_status=QFileInfo::exists(path)?Status::Failed:Status::Missing;return false;
   }
+  if(!lane_configured()) {state_->lane_status=Status::Missing;state_->lane_error="车道模型未配置";}
   bool hardware=false;
 #ifdef PANGO_HAVE_RGA
   hardware=state_->rga.initialize();
 #endif
-  if(!hardware){state_->scene_status=state_->lane_status=Status::Failed;state_->scene_error=state_->lane_error="RGA hardware self-check unavailable; CPU fallback disabled";return false;}
+  if(!hardware){state_->scene_status=Status::Failed;state_->scene_error="RGA hardware self-check unavailable; CPU fallback disabled";
+    if(lane_configured()){state_->lane_status=Status::Failed;state_->lane_error=state_->scene_error;}return false;}
   auto load=[&](bool scene){
     try {auto model=std::make_unique<Runtime>();model->open(scene?state_->spec.scene:state_->spec.lane,scene);
       (scene?state_->scene:state_->lane)=std::move(model);
@@ -106,8 +108,9 @@ bool NeuralModels::initialize(const QString &root) {
       (scene?state_->scene_error:state_->lane_error).clear();
     } catch(const std::exception&e){(scene?state_->scene_status:state_->lane_status)=Status::Failed;(scene?state_->scene_error:state_->lane_error)=QString::fromUtf8(e.what());}
   };
-  load(true);load(false);return state_->scene&&state_->lane;
+  load(true);if(lane_configured())load(false);return state_->scene&&(!lane_configured()||state_->lane);
 }
+bool NeuralModels::lane_configured()const{return !state_->spec.lane.path.isEmpty();}
 QString NeuralModels::description()const{return QStringLiteral("bundle=%1 scene=%2 lane=%3").arg(state_->spec.version).arg(int(state_->scene_status)).arg(int(state_->lane_status));}
 NeuralSceneResult NeuralModels::scene(const FramePacket&p,ViewId view,const std::array<Roi,3>&lights,const Roi&nav,const Roi &roi) {
   NeuralSceneResult r;auto &v=r.vision;v.mode=DetectionMode::Adas;v.stamp=p.stamp;v.view=view;

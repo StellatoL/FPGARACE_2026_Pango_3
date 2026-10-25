@@ -87,7 +87,7 @@ void DetectionWorker::stop(){
 void DetectionWorker::run(){
   PlateRecognizer plates;TrafficSceneDetector legacy;bool plate_attempted=false,legacy_attempted=false;
   NeuralSchedule schedule;ViewTracker tracker;std::unique_ptr<NeuralModels> models;
-  uint64_t generation=0;bool have_generation=false;QString loaded_root;
+  uint64_t generation=0;bool have_generation=false,missing_lane_reported=false;QString loaded_root;
   DetectionMode previous=DetectionMode::RawVideo;
   for(;;){
     FramePacket packet;DetectionMode mode;QString root;GroundCalibration calibration;
@@ -102,7 +102,7 @@ void DetectionWorker::run(){
     }
     if(mode==DetectionMode::RawVideo)continue;
     if(!have_generation||generation!=packet.stamp.generation||previous!=mode){
-      schedule.reset();tracker.reset();legacy.reset_tracking();generation=packet.stamp.generation;have_generation=true;previous=mode;
+      schedule.reset();tracker.reset();legacy.reset_tracking();missing_lane_reported=false;generation=packet.stamp.generation;have_generation=true;previous=mode;
     }
     const auto current=[&]{std::lock_guard<std::mutex> l(state_->mutex);return !state_->stopping&&state_->mode==mode&&state_->generation==packet.stamp.generation;};
     if(root.isEmpty())root=QCoreApplication::applicationDirPath();
@@ -119,15 +119,20 @@ void DetectionWorker::run(){
     if(!packet.stamp.static_image&&monotonic_seconds()-packet.stamp.receive_s>.5){
       std::unique_lock<std::mutex> l(state_->mutex);if(!state_->stopping)state_->changed.wait_for(l,std::chrono::milliseconds(10));continue;
     }
-    auto task=schedule.next(packet.layout,intent,monotonic_seconds(),packet.stamp.sequence);
+    if(!models||loaded_root!=root){
+      models=std::make_unique<NeuralModels>();models->initialize(root);loaded_root=root;
+      missing_lane_reported=false;schedule.reset();continue; // Consume the latest frame after model loading.
+    }
+    if(!models->lane_configured()&&!missing_lane_reported){
+      auto result=models->lane(packet);if(current())emit geometry_ready(std::move(result));missing_lane_reported=true;
+    }
+    auto task=schedule.next(packet.layout,intent,monotonic_seconds(),packet.stamp.sequence,models->lane_configured());
     if(!task){
       std::unique_lock<std::mutex> l(state_->mutex);if(!state_->stopping)state_->changed.wait_for(l,std::chrono::milliseconds(10));continue;
     }
     {std::lock_guard<std::mutex> l(state_->mutex);state_->consumed_generation=packet.stamp.generation;state_->consumed_sequence=packet.stamp.sequence;}
-    if(!models||loaded_root!=root){models=std::make_unique<NeuralModels>();models->initialize(root);loaded_root=root;}
     if(task.kind==NeuralTask::Lane){auto result=models->lane(packet);if(current())emit geometry_ready(std::move(result));continue;}
     Roi crop{0,0,1,1};
-    if(task.kind==NeuralTask::Navigation)crop=nav;
     if(task.kind==NeuralTask::Signal){
       double x=1,y=1,right=0,bottom=0;
       for(const auto&r:rois){x=std::min(x,r.x);y=std::min(y,r.y);right=std::max(right,r.x+r.w);bottom=std::max(bottom,r.y+r.h);}
@@ -135,7 +140,6 @@ void DetectionWorker::run(){
     }
     auto result=models->scene(packet,task.view,rois,nav,crop);
     if(!current())continue;
-    if(task.kind==NeuralTask::Navigation){emit geometry_ready(std::move(result.navigation));continue;}
     auto &objects=result.vision.observation;
     if(task.kind==NeuralTask::Signal){
       objects.components=ObjectObservation::Signal;objects.obstacles.clear();result.vision.overlays.clear();
@@ -144,7 +148,7 @@ void DetectionWorker::run(){
     tracker.update(objects);
     for(auto &o:objects.obstacles)if(task.view==ViewId::Front&&calibration.is_compatible(objects.width,objects.height))o.distance_m=float(calibration.distance(o.box));
     emit result_ready(std::move(result.vision));
-    // Navigation and signal ROIs own their confirmation clocks. Full-frame
+    // Signal ROIs own their confirmation clocks. Full-frame
     // empty detections must not repeatedly cancel a positive small ROI target.
   }
 }

@@ -11,9 +11,10 @@ struct NeuralTask {
 };
 class NeuralSchedule {
 public:
-  NeuralTask next(Layout layout,TurnSignal intent,double now,uint64_t sequence) {
+  NeuralTask next(Layout layout,TurnSignal intent,double now,uint64_t sequence,bool lane_enabled=true) {
     NeuralTask best;double earliest=1e30;
     for(int i=0;i<7;++i) {
+      if(i==5||(!lane_enabled&&i==4))continue; // Navigation is supplied by the driver.
       if(layout==Layout::Single&&i>0&&i<4)continue;
       if(sequence<=sequence_[i])continue;
       const double due=started_[i]?time_[i]+period(i,layout,intent):0;

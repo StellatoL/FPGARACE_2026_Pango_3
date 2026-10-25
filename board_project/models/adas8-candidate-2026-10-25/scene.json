@@ -1,0 +1,110 @@
+{
+  "output": "yolov5_rk_sigmoid_nchw_v1",
+  "width": 640,
+  "height": 640,
+  "classes": [
+    "person",
+    "vehicle",
+    "crosswalk",
+    "light_red",
+    "light_green",
+    "cone",
+    "barrier",
+    "debris"
+  ],
+  "anchors": [
+    [
+      10.0,
+      13.0,
+      16.0,
+      30.0,
+      33.0,
+      23.0
+    ],
+    [
+      30.0,
+      61.0,
+      62.0,
+      45.0,
+      59.0,
+      119.0
+    ],
+    [
+      116.0,
+      90.0,
+      156.0,
+      198.0,
+      373.0,
+      326.0
+    ]
+  ],
+  "normalization": {
+    "mean": [
+      0,
+      0,
+      0
+    ],
+    "std": [
+      255,
+      255,
+      255
+    ]
+  },
+  "provenance": {
+    "source_weights": "/home/cat/ADAS/models/incoming/adas8_best.pt",
+    "source_weights_sha256": "72efb036f9d3d0363cb83541f9fea747c3e9e899565c3ba26e972cbba579acf7",
+    "exporter": "/home/cat/code/yolov5-master/export.py",
+    "exporter_sha256": "d893d97e9e9d7d56a243b7d0c284dfdcc75cd0322fe2c90d5f29e7744a3b319c",
+    "head_source_sha256": "93d52cb612197a55e6287ec236b9ead3f953e20ff55676e658b45c9bec984ff4",
+    "onnx_sha256": "0861b39e36c6b31bf196fdcbc4bb6ddfa36ab86bf87d6cfe6f7acdb811e0a933",
+    "entrypoint": "export.py --rknpu --weights scene.pt --include onnx --imgsz 640 640 --opset 12 --device cpu",
+    "reference": "https://github.com/airockchip/yolov5/blob/master/README_rkopt.md"
+  },
+  "tensors": {
+    "input": {
+      "name": "images",
+      "shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "layout": "NCHW"
+    },
+    "outputs": [
+      {
+        "name": "output0",
+        "shape": [
+          1,
+          39,
+          80,
+          80
+        ],
+        "layout": "NCHW",
+        "activation": "sigmoid"
+      },
+      {
+        "name": "286",
+        "shape": [
+          1,
+          39,
+          40,
+          40
+        ],
+        "layout": "NCHW",
+        "activation": "sigmoid"
+      },
+      {
+        "name": "288",
+        "shape": [
+          1,
+          39,
+          20,
+          20
+        ],
+        "layout": "NCHW",
+        "activation": "sigmoid"
+      }
+    ]
+  }
+}

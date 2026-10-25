@@ -5,9 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-REQUIRED_CLASSES = {'person', 'vehicle', 'crosswalk', 'light_red', 'light_yellow',
-                    'light_green', 'cone', 'barrier', 'debris', 'nav_left',
-                    'nav_straight', 'nav_right'}
+REQUIRED_CLASSES = {'person', 'vehicle', 'crosswalk', 'light_red', 'light_green',
+                    'cone', 'barrier', 'debris'}
 
 
 def export_lane(args):
