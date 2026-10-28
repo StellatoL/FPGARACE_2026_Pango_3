@@ -25,7 +25,7 @@ public:
     const auto &l=road.lane;
     const float shift=direction==Direction::Left?-1.f:direction==Direction::Right?1.f:0.f;
     for(const auto &ob:objects) {
-      if((ob.class_id!=1&&ob.class_id!=10&&ob.class_id!=11)||ob.confidence<.25f)continue;
+      if((ob.class_id!=1&&ob.class_id!=10&&ob.class_id!=11)||(ob.confidence<.25f&&!ob.predicted))continue;
       const auto &b=ob.box;
       if(!std::isfinite(b.left)||!std::isfinite(b.right)||!std::isfinite(b.top)||
          !std::isfinite(b.bottom)||b.right<=b.left||b.bottom<=b.top)return true;
@@ -54,7 +54,7 @@ public:
     result.maneuver=changing?(direction==Direction::Left?Maneuver::ChangeLeft:Maneuver::ChangeRight):Maneuver::KeepLane;
     const float shift=changing?(direction==Direction::Left?-1.f:1.f):0.f;
     if(changing)for(const auto &ob:objects) {
-      if((ob.class_id!=1&&ob.class_id!=10&&ob.class_id!=11)||ob.confidence<.25f||ob.box.bottom<l.top_y)continue;
+      if((ob.class_id!=1&&ob.class_id!=10&&ob.class_id!=11)||(ob.confidence<.25f&&!ob.predicted)||ob.box.bottom<l.top_y)continue;
       const float y=std::clamp(ob.box.bottom,l.top_y,l.bottom_y);
       const float t=(l.bottom_y-y)/(l.bottom_y-l.top_y);
       const float left=l.left_x+t*(l.left_top_x-l.left_x);

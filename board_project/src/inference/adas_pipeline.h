@@ -24,13 +24,12 @@ public:
   void set_model_root(QString root);
   void set_mode(DetectionMode mode);
   void submit(FramePacket packet);
-  void configure(GroundCalibration calibration, std::array<Roi, 3> light_rois, Roi navigation = {0,0,.32,.30});
+  void configure(GroundCalibration calibration, std::array<Roi, 3> light_rois);
   void set_intent(TurnSignal signal);
   void stop();
   uint64_t dropped_frames() const;
 signals:
   void result_ready(VisionFrameResult result);
-  void geometry_ready(adas::GeometryObservation result);
 protected:
   void run() override;
 private:
@@ -45,8 +44,7 @@ public:
   ~GeometryWorker() override;
   void set_enabled(bool enabled);
   void submit(FramePacket packet);
-  void configure(GroundCalibration calibration, Roi nav_roi);
-  void update_objects(ObjectObservation objects);
+  void configure(GroundCalibration calibration);
   void stop();
   uint64_t dropped_frames() const;
 signals:

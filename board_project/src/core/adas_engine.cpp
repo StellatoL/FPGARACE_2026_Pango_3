@@ -1,5 +1,6 @@
 #include "core/adas_engine.h"
 #include "core/local_planner.h"
+#include "core/tracking_evidence.h"
 #include <algorithm>
 #include <cmath>
 
@@ -9,9 +10,13 @@ void AdasEngine::reset(uint64_t generation) {
   // Keep operator-adjustable thresholds across source changes.
   const double front = front_timeout_s, side = side_timeout_s, speed = external_speed_timeout_s;
   const float ttc = ttc_threshold_s;
+  const unsigned components = required_obstacle_components;
+  const bool separate_crosswalk = separate_crosswalk_source;
   *this = AdasEngine(); generation_ = generation;
   front_timeout_s = front; side_timeout_s = side; ttc_threshold_s = ttc;
   external_speed_timeout_s = speed;
+  required_obstacle_components = components;
+  separate_crosswalk_source = separate_crosswalk;
 }
 bool AdasEngine::accept(const Stamp &s, const Stamp &old) {
   return s.generation == generation_ && s.sequence > old.sequence &&
@@ -20,6 +25,21 @@ bool AdasEngine::accept(const Stamp &s, const Stamp &old) {
 bool AdasEngine::fresh(const Stamp &s, double now, double timeout) {
   return s.sequence && std::isfinite(now) && now + 1e-6 >= s.receive_s &&
          (s.static_image || now-s.receive_s <= timeout);
+}
+bool AdasEngine::obstacle_sources_ready(int view,double now,double request_s) const {
+  if(required_obstacle_components!=ObjectObservation::All&&
+     required_obstacle_components!=ObjectObservation::Combined)return false;
+  const auto &p=objects_[view];
+  if(p.width<=0||p.height<=0)return false;
+  const double timeout=view==0?front_timeout_s:side_timeout_s;
+  const unsigned components[]={ObjectObservation::Traffic,ObjectObservation::Vehicle,ObjectObservation::Roadblock};
+  const Status statuses[]={p.traffic_status,p.vehicle_status,p.roadblock_status};
+  const Stamp stamps[]={traffic_stamps_[view],vehicle_stamps_[view],roadblock_stamps_[view]};
+  for(int kind=0;kind<3;++kind)if(required_obstacle_components&components[kind]) {
+    if(statuses[kind]!=Status::Valid||!fresh(stamps[kind],now,timeout)||
+       (request_s>0&&stamps[kind].receive_s<=request_s))return false;
+  }
+  return true;
 }
 bool AdasEngine::ingest(const GeometryObservation &g,double now_s) {
   if (g.stamp.generation > generation_) reset(g.stamp.generation);
@@ -90,12 +110,19 @@ bool AdasEngine::ingest(const SignalObservation &p,double now_s) {
     // observations requires a newly confirmed green after any signal outage.
     if(!valid)return true;
   }
+  const bool lane_signal_context=p.has_lane_lights&&std::any_of(p.lane_lights.begin(),p.lane_lights.end(),
+    [](LightState light){return light==LightState::Red||light==LightState::Yellow||light==LightState::Green;});
   for(int lane=0;lane<3;++lane) {
     const auto raw=p.has_lane_lights?p.lane_lights[lane]:p.light;
+    const bool no_signal=raw==LightState::Unknown||raw==LightState::Black;
+    if(raw==LightState::Red||raw==LightState::Yellow||(lane_signal_context&&no_signal)) {
+      // A new stop indication or an unobserved lane at a known signal cannot
+      // borrow the previous green. Keep the label's existing confirmation rule.
+      junction_context_[lane]=true;green_ready_[lane]=false;light_confirm_[lane][2]={};
+    }
     const bool red=light_confirm_[lane][0].update(raw==LightState::Red,p.stamp.static_image);
     const bool yellow=light_confirm_[lane][1].update(raw==LightState::Yellow,p.stamp.static_image);
     const bool green=light_confirm_[lane][2].update(raw==LightState::Green,p.stamp.static_image);
-    const bool no_signal=raw==LightState::Unknown||raw==LightState::Black;
     const bool left_junction=no_signal_confirm_[lane].update(no_signal,p.stamp.static_image)&&no_signal;
     if(red){lights_[lane]=LightState::Red;junction_context_[lane]=true;green_ready_[lane]=false;}
     else if(yellow){lights_[lane]=LightState::Yellow;junction_context_[lane]=true;green_ready_[lane]=false;}
@@ -112,9 +139,10 @@ void AdasEngine::update_risk(const ObjectObservation &p,unsigned component) {
   risk.nearest=-1; risk.ttc=-1;
   const Status status=kind==0?p.traffic_status:kind==1?p.vehicle_status:p.roadblock_status;
   if(status!=Status::Valid||p.width<=0||p.height<=0)return;
-  bool collision=false;
+  bool collision=false,predicted=false;
   for(const auto &ob:p.obstacles) {
     if(ob.class_id!=(kind==0?1:kind==1?10:11))continue;
+    if(ob.predicted){predicted=true;continue;}
     const bool corridor=ob.box.right>p.width*.35f&&ob.box.left<p.width*.65f;
     if(!corridor||ob.box.bottom<=ob.box.top)continue;
     if(ob.distance_m>=0&&(risk.nearest<0||ob.distance_m<risk.nearest))risk.nearest=ob.distance_m;
@@ -137,24 +165,27 @@ void AdasEngine::update_risk(const ObjectObservation &p,unsigned component) {
     if(ttc>0&&ttc<ttc_threshold_s)collision=true;
   }
   if(collision){risk.latched=true;risk.clear_count=0;}
+  else if(predicted)risk.clear_count=0;
   else if(++risk.clear_count>=3||p.stamp.static_image)risk.latched=false;
 }
-bool AdasEngine::ingest(const ObjectObservation &p,double now_s) {
-  if(now_s<0)now_s=p.stamp.receive_s;
+bool AdasEngine::ingest(const ObjectObservation &sample,double now_s) {
+  if(now_s<0)now_s=sample.stamp.receive_s;
+  auto p=sample;p.obstacles=usable_obstacles(sample,now_s);
   const int v=static_cast<int>(p.view);
   if(v<0||v>=4)return false;
   if(p.stamp.generation>generation_)reset(p.stamp.generation);
   const bool traffic=(p.components&ObjectObservation::Traffic)&&accept(p.stamp,traffic_stamps_[v]);
   const bool vehicle=(p.components&ObjectObservation::Vehicle)&&accept(p.stamp,vehicle_stamps_[v]);
   const bool roadblock=(p.components&ObjectObservation::Roadblock)&&accept(p.stamp,roadblock_stamps_[v]);
+  const bool crosswalk=(p.components&ObjectObservation::Crosswalk)&&accept(p.stamp,crosswalk_stamps_[v]);
   bool signal=false;
   if(v==0&&((p.components&ObjectObservation::Signal)||
-     ((p.components&ObjectObservation::Traffic)&&p.signal_observation))) {
+     ((p.components&ObjectObservation::Traffic)&&p.signal_observation&&!separate_crosswalk_source))) {
     const auto signal_status=p.signal_status==Status::Missing&&(p.components&ObjectObservation::Traffic)?
       p.traffic_status:p.signal_status;
     signal=ingest(SignalObservation{p.stamp,signal_status,p.light,p.has_lane_lights,p.lane_lights},now_s);
   }
-  if(!traffic&&!vehicle&&!roadblock)return signal;
+  if(!traffic&&!vehicle&&!roadblock&&!crosswalk)return signal;
   const bool current=fresh(p.stamp,now_s,v==0?front_timeout_s:side_timeout_s);
   if(v==0&&traffic) {
     const bool gap=traffic_stamps_[0].sequence&&p.stamp.receive_s-traffic_stamps_[0].receive_s>front_timeout_s;
@@ -162,9 +193,18 @@ bool AdasEngine::ingest(const ObjectObservation &p,double now_s) {
       danger_confirm_={};clear_count_=0;
     }
   }
+  if(v==0&&crosswalk&&separate_crosswalk_source) {
+    const bool gap=crosswalk_stamps_[0].sequence&&
+      p.stamp.receive_s-crosswalk_stamps_[0].receive_s>front_timeout_s;
+    if(!current||p.crosswalk_status!=Status::Valid||gap) {
+      crosswalk_danger_confirm_={};crosswalk_clear_count_=0;
+    }
+  }
   auto &merged=objects_[v];
-  merged.view=p.view;merged.width=p.width;merged.height=p.height;
-  if(p.stamp.sequence>=merged.stamp.sequence)merged.stamp=p.stamp;
+  if(traffic||vehicle||roadblock) {
+    merged.view=p.view;merged.width=p.width;merged.height=p.height;
+    if(p.stamp.sequence>=merged.stamp.sequence)merged.stamp=p.stamp;
+  }
   const auto replace_objects=[&](int kind,Status status) {
     auto &items=merged.obstacles;
     items.erase(std::remove_if(items.begin(),items.end(),[&](const Obstacle &o){return o.class_id==kind;}),items.end());
@@ -173,7 +213,9 @@ bool AdasEngine::ingest(const ObjectObservation &p,double now_s) {
   if(traffic) {
     traffic_stamps_[v]=p.stamp;merged.traffic_status=p.traffic_status;
     merged.light=p.light;merged.has_lane_lights=p.has_lane_lights;merged.lane_lights=p.lane_lights;
-    merged.has_zebra=p.has_zebra;merged.person_on_zebra=p.person_on_zebra;
+    if(!separate_crosswalk_source) {
+      merged.has_zebra=p.has_zebra;merged.person_on_zebra=p.person_on_zebra;
+    }
     replace_objects(1,p.traffic_status);
   }
   if(vehicle) {
@@ -184,20 +226,36 @@ bool AdasEngine::ingest(const ObjectObservation &p,double now_s) {
     roadblock_stamps_[v]=p.stamp;merged.roadblock_status=p.roadblock_status;
     replace_objects(11,p.roadblock_status);
   }
+  if(crosswalk) {
+    crosswalk_stamps_[v]=p.stamp;merged.crosswalk_status=p.crosswalk_status;
+    if(separate_crosswalk_source) {
+      merged.has_zebra=p.has_zebra;merged.person_on_zebra=p.person_on_zebra;
+    }
+  }
   if(v!=0)return true;
   if(traffic&&current&&p.traffic_status==Status::Valid) {
-    bool person_danger=p.person_on_zebra,immediate=false;
+    bool person_danger=!separate_crosswalk_source&&p.person_on_zebra,immediate=false,predicted=false;
     for(const auto &ob:p.obstacles) {
       if(ob.class_id!=1||p.width<=0||p.height<=0)continue;
+      if(ob.predicted){predicted=true;continue;}
       const bool corridor=ob.box.right>p.width*.35f&&ob.box.left<p.width*.65f;
       if(corridor&&(ob.box.bottom>p.height*.75f||(ob.distance_m>=0&&ob.distance_m<3))) {
         person_danger=true;immediate=immediate||ob.confidence>=.65f;
       }
     }
-    const bool confirmed=danger_confirm_.update(person_danger,p.stamp.static_image);
+    const bool confirmed=(person_danger||!predicted)&&danger_confirm_.update(person_danger,p.stamp.static_image);
     if(immediate||confirmed){emergency_=true;clear_count_=0;}
+    else if(predicted)clear_count_=0;
     else if(!person_danger){if(++clear_count_>=3||p.stamp.static_image)emergency_=false;}
     else clear_count_=0;
+  }
+  if(crosswalk&&separate_crosswalk_source&&current&&p.crosswalk_status==Status::Valid) {
+    const bool danger=p.person_on_zebra;
+    const bool confirmed=crosswalk_danger_confirm_.update(danger,p.stamp.static_image)&&danger;
+    if(confirmed){crosswalk_emergency_=true;crosswalk_clear_count_=0;}
+    else if(!danger) {
+      if(++crosswalk_clear_count_>=3||p.stamp.static_image)crosswalk_emergency_=false;
+    } else crosswalk_clear_count_=0;
   }
   const unsigned components[]={ObjectObservation::Traffic,ObjectObservation::Vehicle,ObjectObservation::Roadblock};
   const bool accepted[]={traffic,vehicle,roadblock};
@@ -214,10 +272,8 @@ bool AdasEngine::ingest(const ObjectObservation &p,double now_s) {
 AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
   AdasDecision d;
   const auto &front=objects_[0];
-  const bool front_ok=front.width>0&&front.height>0&&front.traffic_status==Status::Valid&&
-    front.vehicle_status==Status::Valid&&front.roadblock_status==Status::Valid&&
-    fresh(traffic_stamps_[0],now,front_timeout_s)&&fresh(vehicle_stamps_[0],now,front_timeout_s)&&
-    fresh(roadblock_stamps_[0],now,front_timeout_s);
+  const auto front_obstacles=usable_obstacles(front,now);
+  const bool front_ok=obstacle_sources_ready(0,now);
   const bool geometry_ok=lane_.status==Status::Valid&&fresh(lane_.stamp,now,front_timeout_s);
   const bool navigation_ok=navigation_.status==Status::Valid&&fresh(navigation_.stamp,now,front_timeout_s);
   int lane=std::clamp(static_cast<int>(ego.lane),0,2);
@@ -237,7 +293,7 @@ AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
   }
   d.speed_source=d.speed_valid?ego.speed_source:SpeedSource::Unavailable;
   d.alarm_overspeed=d.speed_valid&&d.speed_kmh>ego.speed_limit+.5f;
-  d.brake_now=emergency_;
+  d.brake_now=emergency_||crosswalk_emergency_;
   d.alarm_collision=(risks_[0].latched||risks_[1].latched||risks_[2].latched)&&!ego.manual_stop;
   for(int kind=0;kind<3;++kind) {
     const auto &stamp=kind==0?traffic_stamps_[0]:kind==1?vehicle_stamps_[0]:roadblock_stamps_[0];
@@ -272,20 +328,12 @@ AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
     const bool dashed=geometry_ok&&boundary_valid&&raw==LineType::Dashed&&(left?left_dashed:right_dashed);
     const int side_index=left?3:1;
     const auto &side=objects_[side_index];
-    const auto after_request=[&](const Stamp &s) {
-      return ego.lane_change_request_s<=0||s.receive_s>ego.lane_change_request_s;
-    };
-    const bool roadblock_ok=side.roadblock_status==Status::Valid&&
-      fresh(roadblock_stamps_[side_index],now,side_timeout_s)&&after_request(roadblock_stamps_[side_index]);
-    const bool side_ok=side.width>0&&side.height>0&&roadblock_ok&&side.traffic_status==Status::Valid&&
-      side.vehicle_status==Status::Valid&&fresh(traffic_stamps_[side_index],now,side_timeout_s)&&
-      fresh(vehicle_stamps_[side_index],now,side_timeout_s)&&after_request(traffic_stamps_[side_index])&&
-      after_request(vehicle_stamps_[side_index]);
+    const bool side_ok=obstacle_sources_ready(side_index,now,ego.lane_change_request_s);
     bool blocked=false;
-    for(const auto &ob:side.obstacles)if(ob.box.bottom>side.height*.4f&&ob.confidence>=.25f)blocked=true;
+    for(const auto &ob:usable_obstacles(side,now))if(ob.box.bottom>side.height*.4f&&(ob.confidence>=.25f||ob.predicted))blocked=true;
     const bool boundary=(left&&lane==0)||(!left&&lane==2);
     const bool single_input=ego.input_layout==Layout::Single;
-    const bool target_blocked=LocalPlanner::target_path_blocked(lane_,front.obstacles,
+    const bool target_blocked=LocalPlanner::target_path_blocked(lane_,front_obstacles,
       left?Direction::Left:Direction::Right);
     const bool lateral_clear=!target_blocked&&(single_input||(side_ok&&!blocked));
     d.alarm_illegal_lane_change=solid&&ego.force_lane_change!=TurnSignal::None;
@@ -301,11 +349,11 @@ AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
     d.alarm_lane_departure=std::abs(offset)>.8f&&(offset<0?left_solid:right_solid);
   }
   auto planning_lane=lane_;if(!geometry_ok)planning_lane.status=Status::Missing;
-  d.local_plan=LocalPlanner::plan(planning_lane,front.obstacles,d.arrow,d.lane_change_allowed,d.stop_required);
+  d.local_plan=LocalPlanner::plan(planning_lane,front_obstacles,d.arrow,d.lane_change_allowed,d.stop_required);
   if(d.lane_change_allowed&&(!d.local_plan.valid||
      (d.local_plan.maneuver!=Maneuver::ChangeLeft&&d.local_plan.maneuver!=Maneuver::ChangeRight))) {
     d.lane_change_allowed=false;d.arrow=Direction::Straight;d.hint_text=d.local_plan.reason;
-    if(!d.local_plan.valid)d.local_plan=LocalPlanner::plan(planning_lane,front.obstacles,d.arrow,false,d.stop_required);
+    if(!d.local_plan.valid)d.local_plan=LocalPlanner::plan(planning_lane,front_obstacles,d.arrow,false,d.stop_required);
   }
   if(d.local_plan.valid&&d.local_plan.maneuver==Maneuver::Stop&&!d.stop_required) {
     d.stop_required=true;d.auto_driving=false;d.lane_change_allowed=false;d.hint_text=d.local_plan.reason;

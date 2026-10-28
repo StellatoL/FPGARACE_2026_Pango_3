@@ -52,11 +52,15 @@ struct Obstacle {
   Box box;
   float confidence = 0;
   float distance_m = -1;
+  bool predicted = false;
+  double last_observed_s = 0; // Monotonic receive clock of the last real measurement.
+  unsigned track_hits = 0; // Real measurements only; predictions never add hits.
 };
 struct ObjectObservation {
   // A partial observation updates only the listed model components. Cached
   // results from a different model must never acquire this sample's timestamp.
-  static constexpr unsigned Traffic = 1, Vehicle = 2, Roadblock = 4, Signal = 8, Combined = 3, All = 7;
+  static constexpr unsigned Traffic = 1, Vehicle = 2, Roadblock = 4, Signal = 8,
+                            Crosswalk = 16, Combined = 3, All = 7;
   unsigned components = Combined;
   Stamp stamp;
   ViewId view = ViewId::Front;
@@ -73,6 +77,7 @@ struct ObjectObservation {
   std::string error;
   Status signal_status = Status::Missing;
   bool signal_observation = true; // Legacy full-scene light producer; neural ROI owns signals separately.
+  Status crosswalk_status = Status::Missing;
 };
 struct SignalObservation {
   Stamp stamp;

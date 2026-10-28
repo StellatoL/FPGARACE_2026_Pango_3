@@ -1,8 +1,11 @@
+#include "core/manual_controls.h"
+#include "core/tracking_evidence.h"
 #include "ui/adas_controller.h"
 #include "ui/mainwindow.h"
 #include "ui_mainwindow.h"
 #include "hardware/pango_fun.h"
 #include "inference/adas_pipeline.h"
+#include "inference/neural_contract.h"
 #include <QtWidgets>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -72,14 +75,23 @@ private: QImage image_;
 AdasController::AdasController(MainWindow *window,pango_fun *device,Ui::MainWindow *ui)
     :QObject(window),window_(window),device_(device),ui_(ui) {
   started_s_=last_stats_s_=adas::monotonic_seconds();
+  const QString manifest_override=qEnvironmentVariable("ADAS_MODEL_MANIFEST");
+  const QString manifest=manifest_override.isEmpty()?QDir(project_root()).filePath("models/adas/manifest.json"):manifest_override;
+  adas::NeuralBundleSpec bundle;QString manifest_error;
+  if(adas::read_neural_manifest(manifest,bundle,manifest_error)&&bundle.dual) {
+    engine_.required_obstacle_components=adas::ObjectObservation::Combined;
+    engine_.separate_crosswalk_source=true;
+  }
   detector_=new adas::DetectionWorker(this);
+  geometry_=new adas::GeometryWorker(this);
+  geometry_->set_enabled(true);
+  connect(geometry_,&adas::GeometryWorker::result_ready,this,&AdasController::queue_geometry,Qt::DirectConnection);
   detector_->set_model_root(project_root());
   connect(detector_,&adas::DetectionWorker::result_ready,this,&AdasController::queue_result,Qt::DirectConnection);
-  connect(detector_,&adas::DetectionWorker::geometry_ready,this,&AdasController::queue_geometry,Qt::DirectConnection);
   // Execute this callback in the capture emitter thread before its next read().
   connect(device_,&pango_fun::send_wr_done,this,&AdasController::ingest_live,Qt::DirectConnection);
   setup_controls(); load_profile(); update_settings();
-  detector_->set_mode(DetectionMode::Adas); detector_->start();
+  detector_->set_mode(DetectionMode::Adas); detector_->start();geometry_->start();
   qApp->installEventFilter(this);
   timer_.setInterval(33); connect(&timer_,&QTimer::timeout,this,&AdasController::tick);timer_.start();
 }
@@ -104,8 +116,6 @@ void AdasController::setup_controls() {
   mosaic_check_->setToolTip(QStringLiteral("布局跟随 FPGA 实际输入源；放大前视不改变四路安全检查"));
   front_check_=new QCheckBox(QStringLiteral("放大前视 [V]"),source);l->addWidget(front_check_);
   connect(front_check_,&QCheckBox::toggled,this,[this](bool checked){front_only_=checked;});
-  auto *adas_mode=new QPushButton(QStringLiteral("ADAS 模式"),source);adas_mode->setObjectName("adasMode");l->addWidget(adas_mode);
-  connect(adas_mode,&QPushButton::clicked,this,[this](){emit mode_requested(DetectionMode::Adas);});
   source_label_=wrapping_label(source);source_label_->setObjectName("adasSourceStatus");source_label_->setText(QStringLiteral("等待 FPGA 采集\n电脑播放素材 → HDMI → FPGA → PCIe → ARM"));l->addWidget(source_label_);
   ui_->controlPanelLayout->insertWidget(0,source);
   auto *controls=group(QStringLiteral("模拟驾驶控制"),window_,&l);
@@ -116,12 +126,28 @@ void AdasController::setup_controls() {
   nav_combo_=new QComboBox(controls);nav_combo_->addItems({QStringLiteral("不跟随导航"),QStringLiteral("手动左"),QStringLiteral("手动直行"),QStringLiteral("手动右")});form->addRow(QStringLiteral("导航 [N]"),nav_combo_);
   auto_check_=new QCheckBox(QStringLiteral("自动模拟驾驶"),controls);auto_check_->setChecked(true);l->addWidget(auto_check_);
   intersection_check_=new QCheckBox(QStringLiteral("路口方向提示"),controls);l->addWidget(intersection_check_);
-  manual_stop_check_=new QCheckBox(QStringLiteral("人工停车 [空格]"),controls);l->addWidget(manual_stop_check_);
-  force_drive_check_=new QCheckBox(QStringLiteral("强制行驶（用于红灯报警）"),controls);l->addWidget(force_drive_check_);
-  speed_source_combo_=new QComboBox(controls);speed_source_combo_->addItems({QStringLiteral("仿真速度"),QStringLiteral("外部速度（未接入）")});form->addRow(QStringLiteral("速度来源"),speed_source_combo_);
+  manual_stop_check_=new QCheckBox(QStringLiteral("人工停车 [↓ / 空格]"),controls);l->addWidget(manual_stop_check_);
+  force_drive_check_=new QCheckBox(QStringLiteral("强制行驶 [Ctrl+↑]"),controls);l->addWidget(force_drive_check_);
   speed_spin_=new QDoubleSpinBox(controls);speed_spin_->setRange(0,180);speed_spin_->setValue(0);speed_spin_->setSuffix(" km/h");form->addRow(QStringLiteral("仿真速度"),speed_spin_);
   limit_spin_=new QDoubleSpinBox(controls);limit_spin_->setRange(1,180);limit_spin_->setValue(60);limit_spin_->setSuffix(" km/h");form->addRow(QStringLiteral("限速"),limit_spin_);
-  for(auto *combo:{lane_combo_,signal_combo_,force_lane_combo_,nav_combo_,speed_source_combo_})connect(combo,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int){update_ego();});
+  for(auto *combo:{lane_combo_,signal_combo_,force_lane_combo_})connect(combo,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this](int){update_ego();});
+  const auto select_navigation=[this](int index){
+    // A navigation selection is the same ordinary operator action as an arrow
+    // key. It must not inherit a previous forced manoeuvre or opposite signal.
+    using Action=adas::ManualAction;
+    const Action actions[]={Action::ClearNavigation,Action::NavigateLeft,Action::NavigateStraight,Action::NavigateRight};
+    if(index>=0&&index<4)apply_manual(actions[index]);
+  };
+  connect(nav_combo_,QOverload<int>::of(&QComboBox::currentIndexChanged),this,select_navigation);
+  connect(nav_combo_,QOverload<int>::of(&QComboBox::activated),this,[this,select_navigation](int index){
+    if(index<0||index>3)return;
+    const auto signal=index==1?adas::TurnSignal::Left:index==3?adas::TurnSignal::Right:adas::TurnSignal::None;
+    // changed already handles a new index; activated also covers selecting the
+    // same item after a forced action, without applying a changed item twice.
+    if(ego_.force_drive||ego_.force_lane_change!=adas::TurnSignal::None||ego_.signal!=signal||
+       ego_.manual_nav_enabled!=(index>0)||(index>0&&int(ego_.manual_nav)!=index))select_navigation(index);
+    else refresh_turn_request(true);
+  });
   for(auto *check:{auto_check_,intersection_check_,manual_stop_check_,force_drive_check_})connect(check,&QCheckBox::toggled,this,[this](bool){update_ego();});
   for(auto *spin:{speed_spin_,limit_spin_})connect(spin,QOverload<double>::of(&QDoubleSpinBox::valueChanged),this,[this](double){update_ego();});
   auto *reset=new QPushButton(QStringLiteral("复位场景与决策"),controls);reset->setObjectName("adasResetDecision");l->addWidget(reset);connect(reset,&QPushButton::clicked,this,&AdasController::reset_decision);
@@ -139,7 +165,7 @@ void AdasController::setup_controls() {
   update_ego();
   lane_combo_->setObjectName("adasLane");signal_combo_->setObjectName("adasTurnSignal");force_lane_combo_->setObjectName("adasForceLane");
   nav_combo_->setObjectName("adasNavigation");manual_stop_check_->setObjectName("adasManualStop");force_drive_check_->setObjectName("adasForceDrive");
-  speed_source_combo_->setObjectName("adasSpeedSource");speed_spin_->setObjectName("adasManualSpeed");limit_spin_->setObjectName("adasSpeedLimit");
+  speed_spin_->setObjectName("adasManualSpeed");limit_spin_->setObjectName("adasSpeedLimit");
   mosaic_check_->setObjectName("adasMosaic");front_check_->setObjectName("adasFrontView");
 }
 
@@ -160,18 +186,18 @@ void AdasController::publish(const adas::FramePacket &input) {
   frame.stamp.sequence=++sequence_;
   ++captured_;
   display_mailbox_.publish(frame);detector_->submit(frame);
+  geometry_->submit(frame); // Worker mutex owns its enabled/mode gate; capture thread reads no widgets.
 }
-void AdasController::advance_generation(bool keep_image) {
+void AdasController::advance_generation() {
   const auto gen=++generation_;engine_.reset(gen);
   display_mailbox_.take();
   {
     std::lock_guard<std::mutex> lock(results_mutex_);
-    pending_results_={};pending_result_ready_={};pending_geometry_={};pending_geometry_ready_={};
-    pending_legacy_={};pending_legacy_ready_=false;
+    pending_results_={};pending_result_ready_={};pending_geometry_={};pending_geometry_ready_=false;
   }
-  views_={};vehicle_views_={};roadblock_views_={};last_geometry_={};last_navigation_={};last_signal_={};legacy_result_={};decision_={};
-  // A retained preview never acquires a new capture stamp or re-enters inference.
-  if(!keep_image){displayed_={};rendered_=QPixmap();ui_->Label->clear();}
+  views_={};vehicle_views_={};roadblock_views_={};crosswalk_views_={};last_geometry_={};last_signal_={};decision_={};
+  displayed_={};rendered_=QPixmap();ui_->Label->clear();
+  geometry_->set_enabled(false);geometry_->set_enabled(mode_==DetectionMode::Adas);
   requested_turn_=adas::TurnSignal::None;ego_.lane_change_request_s=0;
   refresh_turn_request();
 }
@@ -190,14 +216,14 @@ bool AdasController::stop_live() {
 }
 bool AdasController::stop_source() {
   if(!stop_live())return false;
-  advance_generation(false);return true;
+  advance_generation();return true;
 }
 bool AdasController::shutdown() {
   if(closing_)return true;
   if(!stop_live())return false;
   closing_=true;timer_.stop();
   disconnect(device_,nullptr,this,nullptr);
-  detector_->stop();detector_->wait();
+  detector_->stop();detector_->wait();geometry_->stop();geometry_->wait();
   qApp->removeEventFilter(this);return true;
 }
 bool AdasController::prepare_live() {
@@ -207,14 +233,8 @@ bool AdasController::prepare_live() {
   // Reopening capture cannot reuse another capture session's source identity.
   accepting_live_=false;live_source_known_=false;
   update_ego();
-  sync_live_source();load_profile();update_settings();advance_generation(false);accepting_live_=true;
+  sync_live_source();load_profile();update_settings();advance_generation();accepting_live_=true;
   source_label_->setText(QStringLiteral("FPGA → PCIe · 1280×720 RGB565\n时间基准：ARM 接收单调时间"));return true;
-}
-bool AdasController::start_file(const QString &path) {
-  Q_UNUSED(path);
-  const auto message=QStringLiteral("ARM 不直接打开素材。请在电脑播放 U 盘图片/视频，经 HDMI 输入 FPGA，再使用原有采集按钮。");
-  source_label_->setText(message);window_->statusBar()->showMessage(message,10000);
-  return false;
 }
 void AdasController::set_layout(adas::Layout layout) {
   if(live_source_known_)layout=ui_->radioHDMI->isChecked()?adas::Layout::Single:adas::Layout::Mosaic;
@@ -222,16 +242,14 @@ void AdasController::set_layout(adas::Layout layout) {
   if(layout_.load()==value)return;
   const bool was_live=accepting_live_.exchange(false);
   layout_=value;{QSignalBlocker b(mosaic_check_);mosaic_check_->setChecked(layout==adas::Layout::Mosaic);}
-  update_ego();load_profile();update_settings();advance_generation(false);
+  update_ego();load_profile();update_settings();advance_generation();
   accepting_live_=was_live;
 }
 void AdasController::set_mode(DetectionMode mode) {
+  if(mode!=DetectionMode::Adas&&mode!=DetectionMode::RawVideo)return;
   if(mode_==mode)return;
   mode_=mode;detector_->set_mode(mode);
   advance_generation();
-}
-void AdasController::set_geometry_enabled(bool enabled) {
-  geometry_enabled_=enabled;advance_generation();
 }
 void AdasController::physical_source_changed() {
   const bool was_live=accepting_live_.exchange(false);
@@ -240,7 +258,7 @@ void AdasController::physical_source_changed() {
   // after the established settling interval; preserve the original buttons.
   live_source_known_=false;
   discard_live_before_=adas::monotonic_seconds()+.25;
-  load_profile();update_settings();advance_generation(false);
+  load_profile();update_settings();advance_generation();
   source_label_->setText(QStringLiteral("FPGA 视频源切换中：等待状态确认与新帧"));
   accepting_live_=was_live;
 }
@@ -248,7 +266,7 @@ void AdasController::sync_live_source() {
   if(device_->dev_fd<0) {
     if(live_source_known_) {
       live_source_known_=false;
-      load_profile();update_settings();advance_generation(false);
+      load_profile();update_settings();advance_generation();
       source_label_->setText(QStringLiteral("FPGA 设备未打开：等待重新确认输入源"));
     }
     return;
@@ -267,7 +285,7 @@ void AdasController::sync_live_source() {
     layout_=int(actual_layout);mosaic_check_->setChecked(actual_layout==adas::Layout::Mosaic);update_ego();
   }
   const bool was_live=accepting_live_.exchange(false);
-  load_profile();update_settings();advance_generation(false);
+  load_profile();update_settings();advance_generation();
   discard_live_before_=adas::monotonic_seconds()+.25;accepting_live_=was_live;
   source_label_->setText(known?(source==1?QStringLiteral("FPGA HDMI · 单路前视"):QStringLiteral("FPGA 摄像头 · 四路画布")):QStringLiteral("FPGA 视频源状态未知，来源标定已停用"));
   window_->statusBar()->showMessage(known?QStringLiteral("已同步 FPGA 实际视频源；旧标定/感知历史失效"):
@@ -294,11 +312,11 @@ void AdasController::load_profile() {
     if(!std::isfinite(roi.x)||!std::isfinite(roi.y)||!std::isfinite(roi.w)||!std::isfinite(roi.h)||roi.x<0||roi.y<0||roi.w<=0||roi.h<=0||roi.x+roi.w>1||roi.y+roi.h>1)return fallback;
     return roi;
   };
-  nav_roi_=read_roi("navigation",{0,0,.32,.30});
   for(int i=0;i<3;++i)light_rois_[i]=read_roi("signal_"+QString::number(i),{0,0,1,.5});
 }
 void AdasController::update_settings() {
-  detector_->configure(calibration_,light_rois_,nav_roi_);
+  detector_->configure(calibration_,light_rois_);
+  geometry_->configure(calibration_);
   if(calibration_label_)calibration_label_->setText(calibration_.valid()?QStringLiteral("标定有效：%1×%2 m\n距离：%3")
     .arg(calibration_.width_m()).arg(calibration_.length_m()).arg(calibration_.distance_valid()?QStringLiteral("有效"):QStringLiteral("未设置车头偏移")):QStringLiteral("未标定：米制距离不可用；速度使用独立来源"));
 }
@@ -312,10 +330,20 @@ void AdasController::update_ego() {
   ego_.manual_nav=static_cast<adas::Direction>(std::max(1,nav_combo_->currentIndex()));
   ego_.automatic=auto_check_->isChecked();ego_.intersection_mode=intersection_check_->isChecked();
   ego_.manual_stop=manual_stop_check_->isChecked();ego_.force_drive=force_drive_check_->isChecked();
-  ego_.use_visual_speed=false;ego_.speed_source=speed_source_combo_->currentIndex()==0?adas::SpeedSource::Simulation:adas::SpeedSource::External;
+  ego_.use_visual_speed=false;ego_.speed_source=adas::SpeedSource::Simulation;
   ego_.manual_speed_kmh=float(speed_spin_->value());ego_.speed_limit=float(limit_spin_->value());
-  ego_.paused=false;speed_spin_->setEnabled(ego_.speed_source==adas::SpeedSource::Simulation);
+  ego_.paused=false;
   refresh_turn_request(old_signal!=ego_.signal||old_force!=ego_.force_lane_change||old_manual!=ego_.manual_nav_enabled||old_nav!=ego_.manual_nav);
+}
+void AdasController::apply_manual(adas::ManualAction action) {
+  auto next=ego_;adas::apply_manual_action(next,action);
+  {
+    const QSignalBlocker signal(signal_combo_),force(force_lane_combo_),nav(nav_combo_),stop(manual_stop_check_),drive(force_drive_check_),automatic(auto_check_);
+    signal_combo_->setCurrentIndex(int(next.signal));force_lane_combo_->setCurrentIndex(int(next.force_lane_change));
+    nav_combo_->setCurrentIndex(next.manual_nav_enabled?int(next.manual_nav):0);
+    manual_stop_check_->setChecked(next.manual_stop);force_drive_check_->setChecked(next.force_drive);auto_check_->setChecked(next.automatic);
+  }
+  update_ego();refresh_turn_request(true); // A repeated deliberate request needs a new target-side observation.
 }
 void AdasController::refresh_turn_request(bool new_request) {
   const double now=adas::monotonic_seconds();
@@ -336,22 +364,16 @@ void AdasController::refresh_turn_request(bool new_request) {
 void AdasController::reset_decision() {
   signal_combo_->setCurrentIndex(0);force_lane_combo_->setCurrentIndex(0);nav_combo_->setCurrentIndex(0);
   manual_stop_check_->setChecked(false);force_drive_check_->setChecked(false);
-  advance_generation(false);
+  advance_generation();
 }
 // Direct worker callbacks only replace bounded latest metadata. All decisions,
 // counters, and widget access stay on the GUI thread in drain_results().
 void AdasController::queue_result(VisionFrameResult result) {
   std::lock_guard<std::mutex> lock(results_mutex_);
   if(result.stamp.generation!=generation_.load())return;
-  if(result.mode!=DetectionMode::Adas) {
-    if(!pending_legacy_ready_||result.stamp.sequence>pending_legacy_.stamp.sequence) {
-      if(pending_legacy_ready_)++result_overwritten_;
-      pending_legacy_=std::move(result);pending_legacy_ready_=true;
-    }
-    return;
-  }
+  if(result.mode!=DetectionMode::Adas)return;
   const int view=int(result.view);if(view<0||view>3)return;
-  for(int component=0;component<4;++component) {
+  for(int component=0;component<5;++component) {
     const unsigned bit=1u<<component;
     if(!(result.observation.components&bit)||(component==3&&view!=0))continue;
     auto &slot=pending_results_[view][component];auto &ready=pending_result_ready_[view][component];
@@ -362,73 +384,70 @@ void AdasController::queue_result(VisionFrameResult result) {
 }
 void AdasController::queue_geometry(adas::GeometryObservation result) {
   std::lock_guard<std::mutex> lock(results_mutex_);
-  if(result.stamp.generation!=generation_.load())return;
-  for(int component=0;component<2;++component) {
-    const unsigned bit=1u<<component;if(!(result.components&bit))continue;
-    auto &slot=pending_geometry_[component];auto &ready=pending_geometry_ready_[component];
-    if(ready&&result.stamp.sequence<=slot.stamp.sequence)continue;
-    if(ready)++result_overwritten_;
-    slot=result;slot.components=bit;ready=true;
-  }
+  if(result.stamp.generation!=generation_.load()||!(result.components&adas::GeometryObservation::Lane))return;
+  if(pending_geometry_ready_&&result.stamp.sequence<=pending_geometry_.stamp.sequence)return;
+  if(pending_geometry_ready_)++result_overwritten_;
+  pending_geometry_=std::move(result);pending_geometry_.components=adas::GeometryObservation::Lane;
+  pending_geometry_ready_=true;
 }
 void AdasController::drain_results() {
-  std::array<std::array<VisionFrameResult,4>,4> results{};
-  std::array<std::array<bool,4>,4> ready{};
-  std::array<adas::GeometryObservation,2> geometry{};std::array<bool,2> geometry_ready{};
-  VisionFrameResult legacy;bool legacy_ready=false;
+  std::array<std::array<VisionFrameResult,5>,4> results{};
+  std::array<std::array<bool,5>,4> ready{};
+  adas::GeometryObservation geometry;bool geometry_ready=false;
   {
     std::lock_guard<std::mutex> lock(results_mutex_);
     results.swap(pending_results_);ready.swap(pending_result_ready_);
-    geometry.swap(pending_geometry_);geometry_ready.swap(pending_geometry_ready_);
-    std::swap(legacy,pending_legacy_);std::swap(legacy_ready,pending_legacy_ready_);
+    std::swap(geometry,pending_geometry_);std::swap(geometry_ready,pending_geometry_ready_);
   }
-  for(int view=0;view<4;++view)for(int component=0;component<4;++component)
+  for(int view=0;view<4;++view)for(int component=0;component<5;++component)
     if(ready[view][component])accept_result(std::move(results[view][component]));
-  for(int component=0;component<2;++component)if(geometry_ready[component])accept_geometry(std::move(geometry[component]));
-  if(legacy_ready)accept_result(std::move(legacy));
+  if(geometry_ready)accept_geometry(std::move(geometry));
 }
 void AdasController::accept_result(VisionFrameResult result) {
-  if(closing_||result.stamp.generation!=generation_.load()||result.mode!=mode_)return;
+  if(closing_||mode_!=DetectionMode::Adas||result.mode!=DetectionMode::Adas||result.stamp.generation!=generation_.load())return;
   const int v=static_cast<int>(result.view);if(v<0||v>3)return;
   if(result.observation.stamp.generation!=result.stamp.generation||result.observation.stamp.sequence!=result.stamp.sequence)return;
   if(engine_.generation()!=generation_.load())engine_.reset(generation_.load());
-  if(mode_==DetectionMode::Adas) {
-    auto component_result=[&](unsigned component) {
-      auto split=result;split.observation.components=component;
-      split.overlays.erase(std::remove_if(split.overlays.begin(),split.overlays.end(),[&](const OverlayBoxResult &box) {
-        return component==adas::ObjectObservation::Vehicle?box.class_id!=10:
-          component==adas::ObjectObservation::Roadblock?box.class_id!=11:box.class_id==10||box.class_id==11;
-      }),split.overlays.end());
-      return split;
-    };
-    unsigned accepted=0;
-    if((result.observation.components&adas::ObjectObservation::Traffic)&&result.stamp.sequence>views_[v].stamp.sequence) {
-      views_[v]=component_result(adas::ObjectObservation::Traffic);if(result.observation.traffic_status==adas::Status::Valid)++detection_count_[v];accepted|=adas::ObjectObservation::Traffic;
-    }
-    if((result.observation.components&adas::ObjectObservation::Vehicle)&&result.stamp.sequence>vehicle_views_[v].stamp.sequence) {
-      vehicle_views_[v]=component_result(adas::ObjectObservation::Vehicle);if(result.observation.vehicle_status==adas::Status::Valid)++vehicle_count_[v];accepted|=adas::ObjectObservation::Vehicle;
-    }
-    if((result.observation.components&adas::ObjectObservation::Roadblock)&&result.stamp.sequence>roadblock_views_[v].stamp.sequence) {
-      roadblock_views_[v]=component_result(adas::ObjectObservation::Roadblock);accepted|=adas::ObjectObservation::Roadblock;
-    }
-    const bool signal=v==0&&((result.observation.components&adas::ObjectObservation::Signal)||
-      ((result.observation.components&adas::ObjectObservation::Traffic)&&result.observation.signal_observation));
-    if(signal&&result.stamp.sequence>last_signal_.stamp.sequence) {
-      const auto &p=result.observation;
-      const auto status=p.signal_status==adas::Status::Missing&&(p.components&adas::ObjectObservation::Traffic)?p.traffic_status:p.signal_status;
-      last_signal_={result.stamp,status,p.light,p.has_lane_lights,p.lane_lights};if(status==adas::Status::Valid)++signal_count_;
-    }
-    if(result.observation.components&adas::ObjectObservation::Signal)accepted|=adas::ObjectObservation::Signal;
-    if(accepted){result.observation.components=accepted;engine_.ingest(result.observation,adas::monotonic_seconds());}
-  } else if(result.stamp.sequence>legacy_result_.stamp.sequence) {
-    legacy_result_=result;++detection_count_[0];
+  auto component_result=[&](unsigned component) {
+    auto split=result;split.observation.components=component;
+    split.overlays.erase(std::remove_if(split.overlays.begin(),split.overlays.end(),[&](const OverlayBoxResult &box) {
+      return component==adas::ObjectObservation::Vehicle?box.class_id!=10:
+        component==adas::ObjectObservation::Roadblock?box.class_id!=11:
+        component==adas::ObjectObservation::Crosswalk?box.class_id==1||box.class_id==10||box.class_id==11:
+        engine_.separate_crosswalk_source?box.class_id!=1:box.class_id==10||box.class_id==11;
+    }),split.overlays.end());
+    return split;
+  };
+  unsigned accepted=0;
+  if((result.observation.components&adas::ObjectObservation::Traffic)&&result.stamp.sequence>views_[v].stamp.sequence) {
+    views_[v]=component_result(adas::ObjectObservation::Traffic);if(result.observation.traffic_status==adas::Status::Valid)++detection_count_[v];accepted|=adas::ObjectObservation::Traffic;
   }
+  if((result.observation.components&adas::ObjectObservation::Vehicle)&&result.stamp.sequence>vehicle_views_[v].stamp.sequence) {
+    vehicle_views_[v]=component_result(adas::ObjectObservation::Vehicle);if(result.observation.vehicle_status==adas::Status::Valid)++vehicle_count_[v];accepted|=adas::ObjectObservation::Vehicle;
+  }
+  if((result.observation.components&adas::ObjectObservation::Roadblock)&&result.stamp.sequence>roadblock_views_[v].stamp.sequence) {
+    roadblock_views_[v]=component_result(adas::ObjectObservation::Roadblock);accepted|=adas::ObjectObservation::Roadblock;
+  }
+  if((result.observation.components&adas::ObjectObservation::Crosswalk)&&result.stamp.sequence>crosswalk_views_[v].stamp.sequence) {
+    crosswalk_views_[v]=component_result(adas::ObjectObservation::Crosswalk);
+    if(result.observation.crosswalk_status==adas::Status::Valid)++crosswalk_count_[v];
+    accepted|=adas::ObjectObservation::Crosswalk;
+  }
+  const bool signal=v==0&&((result.observation.components&adas::ObjectObservation::Signal)||
+    ((result.observation.components&adas::ObjectObservation::Traffic)&&result.observation.signal_observation&&!engine_.separate_crosswalk_source));
+  if(signal&&result.stamp.sequence>last_signal_.stamp.sequence) {
+    const auto &p=result.observation;
+    const auto status=p.signal_status==adas::Status::Missing&&(p.components&adas::ObjectObservation::Traffic)?p.traffic_status:p.signal_status;
+    last_signal_={result.stamp,status,p.light,p.has_lane_lights,p.lane_lights};if(status==adas::Status::Valid)++signal_count_;
+  }
+  if(result.observation.components&adas::ObjectObservation::Signal)accepted|=adas::ObjectObservation::Signal;
+  if(accepted){result.observation.components=accepted;engine_.ingest(result.observation,adas::monotonic_seconds());}
 }
 void AdasController::accept_geometry(adas::GeometryObservation result) {
   if(closing_||mode_!=DetectionMode::Adas||result.stamp.generation!=generation_.load())return;
   if(engine_.generation()!=generation_.load())engine_.reset(generation_.load());
   unsigned accepted=0;
-  if(geometry_enabled_&&(result.components&adas::GeometryObservation::Lane)&&result.stamp.sequence>last_geometry_.stamp.sequence) {
+  if((result.components&adas::GeometryObservation::Lane)&&result.stamp.sequence>last_geometry_.stamp.sequence) {
     last_geometry_=result;last_geometry_.components=adas::GeometryObservation::Lane;if(result.status==adas::Status::Valid)++geometry_count_;accepted|=adas::GeometryObservation::Lane;
   }
   // Navigation is manual: visual results cannot change its direction or confirmation history.
@@ -443,14 +462,22 @@ bool AdasController::eventFilter(QObject *receiver,QEvent *event) {
   };
   if(editing(receiver)||editing(qApp->focusWidget()))return false;
   auto *key=static_cast<QKeyEvent*>(event);if(key->isAutoRepeat())return false;
+  const bool control=key->modifiers().testFlag(Qt::ControlModifier);
+  using Action=adas::ManualAction;
   switch(key->key()) {
   case Qt::Key_1:case Qt::Key_2:case Qt::Key_3:lane_combo_->setCurrentIndex(key->key()-Qt::Key_1);break;
-  case Qt::Key_A:signal_combo_->setCurrentIndex(signal_combo_->currentIndex()==1?0:1);break;
-  case Qt::Key_D:signal_combo_->setCurrentIndex(signal_combo_->currentIndex()==2?0:2);break;
-  case Qt::Key_J:force_lane_combo_->setCurrentIndex(force_lane_combo_->currentIndex()==1?0:1);break;
-  case Qt::Key_L:force_lane_combo_->setCurrentIndex(force_lane_combo_->currentIndex()==2?0:2);break;
-  case Qt::Key_Space:manual_stop_check_->toggle();break;
-  case Qt::Key_N:nav_combo_->setCurrentIndex((nav_combo_->currentIndex()+1)%4);break;
+  case Qt::Key_Up:apply_manual(control?Action::ForceDrive:Action::Drive);break;
+  case Qt::Key_Down:apply_manual(Action::Stop);break;
+  case Qt::Key_Left:apply_manual(control?Action::ForceChangeLeft:Action::NavigateLeft);break;
+  case Qt::Key_Right:apply_manual(control?Action::ForceChangeRight:Action::NavigateRight);break;
+  case Qt::Key_W:apply_manual(Action::NavigateStraight);break;
+  case Qt::Key_Escape:apply_manual(Action::ClearNavigation);break;
+  case Qt::Key_A:apply_manual(Action::SignalLeft);break;
+  case Qt::Key_D:apply_manual(Action::SignalRight);break;
+  case Qt::Key_J:apply_manual(Action::ToggleForceLeft);break;
+  case Qt::Key_L:apply_manual(Action::ToggleForceRight);break;
+  case Qt::Key_Space:apply_manual(Action::ToggleStop);break;
+  case Qt::Key_N:apply_manual(Action::CycleNavigation);break;
   case Qt::Key_V:front_check_->toggle();break;
   default:return false;
   }
@@ -563,8 +590,12 @@ void AdasController::render(double now) {
     for(const auto &box:result.overlays) {
       const QRectF rect(box.left,box.top,box.right-box.left,box.bottom-box.top);
       if(rect.width()<=0||rect.height()<=0)continue;
-      QColor color(box.color_r,box.color_g,box.color_b);painter.setPen(QPen(color,2));painter.setBrush(Qt::NoBrush);painter.drawRect(rect);
+      if(box.predicted){adas::Obstacle evidence;evidence.predicted=true;evidence.last_observed_s=box.last_observed_s;evidence.track_hits=box.track_hits;
+        if(!adas::usable_obstacle(evidence,result.stamp,result.view,now))continue;}
+      QColor color(box.color_r,box.color_g,box.color_b);painter.setPen(QPen(color,2,box.predicted?Qt::DashLine:Qt::SolidLine));painter.setBrush(Qt::NoBrush);painter.drawRect(rect);
       auto text=QString::fromUtf8(box.label.c_str());
+      if(box.track_id>=0)text+=QStringLiteral(" #%1").arg(qulonglong(box.track_id)&0xffffffffULL);
+      if(box.predicted)text+=QStringLiteral(" 跟踪预测");
       auto extent=painter.fontMetrics().boundingRect(text);QRectF label(rect.x(),std::max(0.0,rect.y()-extent.height()-4),extent.width()+6,extent.height()+4);
       painter.fillRect(label,QColor(0,0,0,190));painter.drawText(label.adjusted(3,0,0,0),Qt::AlignVCenter|Qt::AlignLeft,text);
     }
@@ -577,6 +608,8 @@ void AdasController::render(double now) {
       if(fresh(result.stamp,v==0?engine_.front_timeout_s:engine_.side_timeout_s))draw_boxes(result);
       if(fresh(vehicle_views_[v].stamp,v==0?engine_.front_timeout_s:engine_.side_timeout_s))draw_boxes(vehicle_views_[v]);
       if(fresh(roadblock_views_[v].stamp,v==0?engine_.front_timeout_s:engine_.side_timeout_s))draw_boxes(roadblock_views_[v]);
+      if(crosswalk_views_[v].observation.crosswalk_status==adas::Status::Valid&&
+         fresh(crosswalk_views_[v].stamp,v==0?engine_.front_timeout_s:engine_.side_timeout_s))draw_boxes(crosswalk_views_[v]);
       const int header_height=qRound(24*text_scale);
       painter.fillRect(QRect(0,0,rect.w,header_height),QColor(0,0,0,160));painter.setPen(Qt::white);
       QFont font=painter.font();font.setPixelSize(qRound(13*text_scale));painter.setFont(font);
@@ -596,11 +629,6 @@ void AdasController::render(double now) {
           };
           boundary(lane.left_valid,lane.left_type,lane.left_top_x,lane.left_x);
           boundary(lane.right_valid,lane.right_type,lane.right_top_x,lane.right_x);
-          painter.setPen(QPen(QColor(100,220,255,180),1,Qt::DashLine));painter.setBrush(Qt::NoBrush);
-          painter.drawRect(QRectF(nav_roi_.x*rect.w,nav_roi_.y*rect.h,nav_roi_.w*rect.w,nav_roi_.h*rect.h));
-        }
-        if(last_navigation_.status==adas::Status::Valid&&fresh(last_navigation_.stamp,engine_.front_timeout_s)&&last_navigation_.nav.detected) {
-          const auto &b=last_navigation_.nav.box;painter.setPen(QPen(Qt::cyan,2));painter.setBrush(Qt::NoBrush);painter.drawRect(QRectF(b.left,b.top,b.right-b.left,b.bottom-b.top));
         }
         if(decision_.local_plan.valid&&decision_.local_plan.point_count) {
           QPolygonF path;
@@ -625,10 +653,6 @@ void AdasController::render(double now) {
         for(int i=0;i<3;++i){painter.setBrush((decision_.led_mask&(1<<i))?QColor(80,255,140):QColor(60,65,70));painter.drawEllipse(QPoint(18+i*22,led_y),7,7);}
         if(ego_.signal!=adas::TurnSignal::None&&blink){painter.setPen(QColor(255,195,30));painter.drawText(QRect(85,led_y-12,150,24),Qt::AlignVCenter,ego_.signal==adas::TurnSignal::Left?QStringLiteral("◀ 左转向"):QStringLiteral("右转向 ▶"));}
       }
-    } else if(mode_!=DetectionMode::RawVideo&&fresh(legacy_result_.stamp,engine_.front_timeout_s)) {
-      draw_boxes(legacy_result_);
-      const auto &marker=legacy_result_.alert_marker;
-      if(marker.visible){painter.setPen(QPen(QColor(marker.stroke_r,marker.stroke_g,marker.stroke_b),3));painter.setBrush(QColor(marker.fill_r,marker.fill_g,marker.fill_b));painter.drawEllipse(QPoint(marker.center_x,marker.center_y),marker.radius,marker.radius);painter.drawText(QRect(marker.center_x-marker.radius,marker.center_y-marker.radius,marker.radius*2,marker.radius*2),Qt::AlignCenter,QString::fromStdString(marker.text));}
     }
     painter.restore();
   }
@@ -640,6 +664,12 @@ void AdasController::render(double now) {
     auto speed=decision_.speed_valid?QStringLiteral("%1 km/h").arg(decision_.speed_kmh,0,'f',1):QStringLiteral("速度无效");
     painter.drawText(QRect(10,output.height()-height,output.width()-20,height),Qt::AlignVCenter|Qt::AlignLeft,
       painter.fontMetrics().elidedText(QStringLiteral("%1 | %2 | %3").arg(speed,QString::fromUtf8(adas::light_text(decision_.light)),QString::fromStdString(decision_.status_text)),Qt::ElideRight,output.width()-20));
+  }
+  if(adas_mode&&(decision_.brake_now||decision_.alarm_collision)){
+    const QRect area(output.width()/8,output.height()/4,output.width()*3/4,std::max(64,output.height()/5));
+    painter.fillRect(area,QColor(180,0,12,230));painter.setPen(QPen(Qt::white,2));painter.drawRect(area);
+    QFont alert=painter.font();alert.setPixelSize(std::max(26,output.height()/14));alert.setBold(true);painter.setFont(alert);
+    painter.drawText(area,Qt::AlignCenter,QStringLiteral("紧急刹车 · 危险警告"));
   }
   painter.end();rendered_=output;
   ui_->Label->setPixmap(output.scaled(ui_->Label->size(),Qt::KeepAspectRatio,Qt::FastTransformation));
@@ -662,9 +692,9 @@ void AdasController::refresh_labels(double now) {
   const auto fresh=[&](const adas::Stamp &s,double timeout){return s.generation==gen&&s.sequence&&now>=s.receive_s&&(s.static_image||now-s.receive_s<=timeout);};
   if(mode_!=DetectionMode::Adas) {
     alarm_label_->clear();
-    decision_label_->setText(mode_==DetectionMode::RawVideo?QStringLiteral("纯视频 · 不进行推理"):QString::fromStdString(legacy_result_.status_text));
+    decision_label_->setText(QStringLiteral("纯视频 · 不进行推理"));
     speed_label_->setText(QStringLiteral("切换到 ADAS 模式使用驾驶辅助"));
-    capability_label_->setText(QString::fromStdString(legacy_result_.error_message));return;
+    capability_label_->clear();return;
   }
   decision_label_->setText(QStringLiteral("%1\n%2\n行为：%3 · %4")
     .arg(QString::fromStdString(decision_.status_text),QString::fromStdString(decision_.hint_text),direction_text(decision_.arrow),decision_.auto_driving?QStringLiteral("模拟行驶"):QStringLiteral("停车")));
@@ -677,23 +707,32 @@ void AdasController::refresh_labels(double now) {
   if(decision_.alarm_overspeed)alarms<<QStringLiteral("超过设定限速");
   if(decision_.alarm_lane_departure)alarms<<QStringLiteral("车道偏离 / 压实线");
   alarm_label_->setText(alarms.isEmpty()?QStringLiteral("当前告警：无"):QStringLiteral("当前告警：\n• ")+alarms.join(QStringLiteral("\n• ")));
-  const QString speed_source=ego_.speed_source==adas::SpeedSource::Simulation?QStringLiteral("仿真速度"):QStringLiteral("外部速度");
-  speed_label_->setText(QStringLiteral("%1：%2\n%3\n距离：%4 · TTC：%5")
-    .arg(speed_source,decision_.speed_valid?QStringLiteral("%1 km/h").arg(decision_.speed_kmh,0,'f',1):QStringLiteral("无效"),
-    ego_.speed_source==adas::SpeedSource::Simulation?QStringLiteral("仅用于模拟，不代表视觉测量"):QStringLiteral("外部接口未接入或样本过期"),
+  speed_label_->setText(QStringLiteral("仿真速度：%1\n仅用于模拟，不代表视觉测量\n距离：%2 · TTC：%3")
+    .arg(decision_.speed_valid?QStringLiteral("%1 km/h").arg(decision_.speed_kmh,0,'f',1):QStringLiteral("无效"),
     decision_.nearest_obstacle_m>=0?QStringLiteral("%1 m").arg(decision_.nearest_obstacle_m,0,'f',1):QStringLiteral("无效"),decision_.ttc_s>0?QStringLiteral("%1 s").arg(decision_.ttc_s,0,'f',1):QStringLiteral("无效")));
   const auto &p=views_[0].observation;
   const auto &vehicle=vehicle_views_[0];
   const auto traffic_status=status_text(p.traffic_status)+(views_[0].stamp.sequence&&!fresh(views_[0].stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
   const auto &roadblock=roadblock_views_[0];
-  const auto roadblock_status=roadblock.observation.roadblock_status==adas::Status::Missing?QStringLiteral("未配置（模型待补）"):
+  const auto roadblock_status=roadblock.observation.roadblock_status==adas::Status::Missing?
+    (engine_.separate_crosswalk_source?QStringLiteral("未配置"):QStringLiteral("未配置（模型待补）")):
     status_text(roadblock.observation.roadblock_status)+(!fresh(roadblock.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
   const auto lane_status=status_text(last_geometry_.status)+(last_geometry_.stamp.sequence&&!fresh(last_geometry_.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
   const auto navigation_status=ego_.manual_nav_enabled?QStringLiteral("手动 ")+direction_text(ego_.manual_nav):QStringLiteral("关闭（按 N 切换）");
   const auto signal_status=status_text(last_signal_.status)+(last_signal_.stamp.sequence&&!fresh(last_signal_.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
-  capability_label_->setText(QStringLiteral("前视交通：%1 · 车辆：%2%3\n路障识别：%4\n%5\n车道模型：%6 · 导航：%7\n%8\n信号灯：%9").arg(traffic_status,status_text(vehicle.observation.vehicle_status),
+  QString capability=QStringLiteral("前视交通：%1 · 车辆：%2%3\n路障识别：%4\n%5\n传统车道：%6 · 导航：%7\n%8\n信号灯：%9").arg(traffic_status,status_text(vehicle.observation.vehicle_status),
     vehicle.stamp.sequence&&!fresh(vehicle.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString(),roadblock_status,QString::fromStdString(views_[0].error_message),lane_status,navigation_status,
-    !last_geometry_.stamp.sequence?QStringLiteral("等待 FPGA 输入与模型观测"):last_geometry_.status==adas::Status::Valid?QString():QString::fromStdString(last_geometry_.speed.reason),signal_status));
+    !last_geometry_.stamp.sequence?QStringLiteral("等待 FPGA 输入与模型观测"):last_geometry_.status==adas::Status::Valid?QString():QString::fromStdString(last_geometry_.speed.reason),signal_status);
+  if(engine_.separate_crosswalk_source) {
+    const auto &crosswalk=crosswalk_views_[0];
+    const auto crossing_status=status_text(crosswalk.observation.crosswalk_status)+
+      (crosswalk.stamp.sequence&&!fresh(crosswalk.stamp,engine_.front_timeout_s)?QStringLiteral("（数据过期）"):QString());
+    capability.replace(QStringLiteral("前视交通："),QStringLiteral("主人员："));
+    capability=QStringLiteral("双640：人员车辆 + 灯色斑马线\n")+capability+
+      QStringLiteral("\n斑马线过街：%1").arg(crossing_status);
+    if(!crosswalk.error_message.empty())capability+=QStringLiteral("\n")+QString::fromStdString(crosswalk.error_message);
+  }
+  capability_label_->setText(capability);
 }
 void AdasController::refresh_stats(double now) {
   const double dt=now-last_stats_s_;if(dt<=0)return;
@@ -703,13 +742,15 @@ void AdasController::refresh_stats(double now) {
   for(int v=0;v<4;++v){
     detection_hz_[v]=(detection_count_[v]-previous_detection_count_[v])/dt;previous_detection_count_[v]=detection_count_[v];
     vehicle_hz_[v]=(vehicle_count_[v]-previous_vehicle_count_[v])/dt;previous_vehicle_count_[v]=vehicle_count_[v];
+    crosswalk_hz_[v]=(crosswalk_count_[v]-previous_crosswalk_count_[v])/dt;previous_crosswalk_count_[v]=crosswalk_count_[v];
   }
   last_stats_s_=now;last_captured_=received;last_shown_=shown_;previous_geometry_count_=geometry_count_;
   ui_->frame->setText(QStringLiteral("%1 fps").arg(capture_hz_,0,'f',1));ui_->total_frame->setText(QString::number(received));
-  stats_label_->setText(QStringLiteral("输入 %1 · 渲染 %2 fps\n车道 NPU %3 Hz · 目标前 %4 Hz\n右/后/左 %5/%6/%7 Hz\n车辆前 %8 Hz\n帧池丢弃 %9 · NPU覆盖 %10\n结果覆盖 %11")
+  stats_label_->setText(QStringLiteral("输入 %1 · 渲染 %2 fps\n车道 CPU %3 Hz · 目标前 %4 Hz\n右/后/左 %5/%6/%7 Hz\n车辆前 %8 Hz\n帧池丢弃 %9 · NPU覆盖 %10\n结果覆盖 %11")
     .arg(capture_hz_,0,'f',1).arg(preview_hz_,0,'f',1).arg(lane_hz_,0,'f',1).arg(detection_hz_[0],0,'f',1)
     .arg(detection_hz_[1],0,'f',1).arg(detection_hz_[2],0,'f',1).arg(detection_hz_[3],0,'f',1)
     .arg(vehicle_hz_[0],0,'f',1).arg(pool_dropped_.load()).arg(detector_->dropped_frames()).arg(result_overwritten_.load()));
+  if(engine_.separate_crosswalk_source)stats_label_->setText(stats_label_->text()+QStringLiteral("\n灯色/斑马线前 %1 Hz").arg(crosswalk_hz_[0],0,'f',1));
 }
 void AdasController::write_report(const QString &path) const {
   if(path.isEmpty())return;
@@ -723,43 +764,72 @@ void AdasController::write_report(const QString &path) const {
   report["left_line_type"]=int(last_geometry_.lane.left_type);report["right_line_type"]=int(last_geometry_.lane.right_type);
   report["navigation_source"]=QStringLiteral("manual");report["navigation_detected"]=ego_.manual_nav_enabled;
   report["navigation_direction"]=int(ego_.manual_nav_enabled?ego_.manual_nav:adas::Direction::None);
-  report["mode"]=int(mode_);report["legacy_model_ready"]=legacy_result_.model_ready;
-  report["legacy_error"]=QString::fromStdString(legacy_result_.error_message);
+  report["mode"]=int(mode_);
   report["simulation_paused"]=ego_.paused;
   report["captured_frames"]=double(captured_.load());report["rendered_frames"]=double(shown_);
   report["capture_fps_average"]=captured_.load()/duration;report["render_fps_average"]=shown_/duration;
-  report["lane_npu_hz_average"]=geometry_count_/duration;report["front_receive_to_hud_p95_ms"]=percentile(detection_latency_);
+  report["lane_backend"]=QStringLiteral("classical_cpu");report["lane_cpu_hz_average"]=geometry_count_/duration;
+  report["lane_npu_hz_average"]=0.;report["front_receive_to_hud_p95_ms"]=percentile(detection_latency_);
   report["geometry_receive_to_hud_p95_ms"]=percentile(geometry_latency_);
   report["vehicle_receive_to_hud_p95_ms"]=percentile(vehicle_latency_);
   report["pool_dropped"]=double(pool_dropped_.load());report["npu_overwritten"]=double(detector_->dropped_frames());report["result_overwritten"]=double(result_overwritten_.load());
   QJsonArray counts,rates;for(int v=0;v<4;++v){counts.append(double(detection_count_[v]));rates.append(detection_count_[v]/duration);}report["detections_per_view"]=counts;report["npu_hz_average"]=rates;
   QJsonArray vehicle_rates;for(auto count:vehicle_count_)vehicle_rates.append(count/duration);report["vehicle_hz_average"]=vehicle_rates;
   report["traffic_ready"]=views_[0].observation.traffic_status==adas::Status::Valid;
+  report["dual_model_profile"]=engine_.separate_crosswalk_source&&engine_.required_obstacle_components==adas::ObjectObservation::Combined;
+  report["required_obstacle_components"]=int(engine_.required_obstacle_components);
+  report["separate_crosswalk_source"]=engine_.separate_crosswalk_source;
+  report["crosswalk_ready"]=crosswalk_views_[0].observation.crosswalk_status==adas::Status::Valid;
+  report["crosswalk_status"]=int(crosswalk_views_[0].observation.crosswalk_status);
+  report["crosswalk_sequence"]=double(crosswalk_views_[0].stamp.sequence);
+  report["crosswalk_generation"]=double(crosswalk_views_[0].stamp.generation);
+  report["crosswalk_receive_s"]=crosswalk_views_[0].stamp.receive_s;
+  report["crosswalk_source_s"]=crosswalk_views_[0].stamp.source_s;
+  report["crosswalk_static_image"]=crosswalk_views_[0].stamp.static_image;
   report["vehicle_ready"]=vehicle_views_[0].observation.vehicle_status==adas::Status::Valid;
   report["roadblock_ready"]=roadblock_views_[0].observation.roadblock_status==adas::Status::Valid;report["calibration_valid"]=calibration_.valid();
   report["live_source_known"]=live_source_known_;
   report["generation"]=double(generation_.load());
   const double wall=adas::monotonic_seconds();
-  QJsonArray ages,vehicle_ages;
+  QJsonArray ages,vehicle_ages,crosswalk_ages,crosswalk_sequences,crosswalk_counts,crosswalk_rates,crosswalk_statuses;
   for(int v=0;v<4;++v) {
     ages.append(views_[v].stamp.generation==generation_.load()?(wall-views_[v].stamp.receive_s)*1000:-1.);
     vehicle_ages.append(vehicle_views_[v].stamp.generation==generation_.load()?(wall-vehicle_views_[v].stamp.receive_s)*1000:-1.);
+    const auto &crosswalk=crosswalk_views_[v];
+    crosswalk_ages.append(crosswalk.stamp.generation==generation_.load()&&crosswalk.stamp.sequence?(wall-crosswalk.stamp.receive_s)*1000:-1.);
+    crosswalk_sequences.append(double(crosswalk.stamp.sequence));
+    crosswalk_counts.append(double(crosswalk_count_[v]));
+    crosswalk_rates.append(crosswalk_count_[v]/duration);
+    crosswalk_statuses.append(int(crosswalk.observation.crosswalk_status));
   }
   report["traffic_age_ms"]=ages;report["vehicle_age_ms"]=vehicle_ages;
+  report["crosswalk_age_ms"]=crosswalk_ages;report["crosswalk_sequences_per_view"]=crosswalk_sequences;
+  report["crosswalk_updates_per_view"]=crosswalk_counts;report["crosswalk_hz_average"]=crosswalk_rates;
+  report["crosswalk_status_per_view"]=crosswalk_statuses;
   report["front_last_infer_ms"]=views_[0].observation.infer_ms;
   report["vehicle_last_infer_ms"]=vehicle_views_[0].observation.infer_ms;
+  report["crosswalk_last_infer_ms"]=crosswalk_views_[0].observation.infer_ms;
   report["geometry_last_process_ms"]=last_geometry_.process_ms;
+  report["cpu_lane_overwritten"]=double(geometry_->dropped_frames());
+  report["brake_now"]=decision_.brake_now;report["alarm_collision"]=decision_.alarm_collision;
+  unsigned measured=0,predicted=0;const double report_now=adas::monotonic_seconds();
+  for(const auto &view:views_){
+    const auto &stamp=view.stamp;const double age=report_now-stamp.receive_s;
+    if(stamp.generation!=generation_.load()||!stamp.sequence||age<0||view.observation.traffic_status!=adas::Status::Valid||
+        (!stamp.static_image&&age>(view.view==adas::ViewId::Front?engine_.front_timeout_s:engine_.side_timeout_s)))continue;
+    for(const auto &object:adas::usable_obstacles(view.observation,report_now))if(object.class_id==1){if(object.predicted)++predicted;else ++measured;}
+  }
+  report["front_and_side_person_measured"]=int(measured);report["front_and_side_person_predicted"]=int(predicted);
   report["speed_valid"]=decision_.speed_valid;report["speed_kmh"]=decision_.speed_valid?QJsonValue(decision_.speed_kmh):QJsonValue();
-  report["speed_source"]=decision_.speed_source==adas::SpeedSource::Simulation?QStringLiteral("simulation"):
-    decision_.speed_source==adas::SpeedSource::External?QStringLiteral("external"):QStringLiteral("unavailable");
-  report["speed_requested_source"]=ego_.speed_source==adas::SpeedSource::Simulation?QStringLiteral("simulation"):QStringLiteral("external");
+  report["speed_source"]=decision_.speed_source==adas::SpeedSource::Simulation?QStringLiteral("simulation"):QStringLiteral("unavailable");
+  report["speed_requested_source"]=QStringLiteral("simulation");
   report["input_route"]=QStringLiteral("PC playback/cameras -> FPGA -> existing PCIe/DMA -> ARM");
   report["time_basis"]=QStringLiteral("ARM receive monotonic time; PC media timestamps unavailable");
   report["front_zoom"]=front_only_;report["lane_change_request_s"]=ego_.lane_change_request_s;
-  report["lane_status"]=int(last_geometry_.status);report["navigation_status"]=int(last_navigation_.status);
-  report["lane_sequence"]=double(last_geometry_.stamp.sequence);report["navigation_sequence"]=double(last_navigation_.stamp.sequence);
+  report["lane_status"]=int(last_geometry_.status);
+  report["lane_sequence"]=double(last_geometry_.stamp.sequence);
   report["signal_sequence"]=double(last_signal_.stamp.sequence);report["signal_status"]=int(last_signal_.status);
-  report["navigation_updates"]=double(navigation_count_);report["signal_updates"]=double(signal_count_);
+  report["signal_updates"]=double(signal_count_);
   report["lane_error"]=last_geometry_.status==adas::Status::Valid?QString():QString::fromStdString(last_geometry_.speed.reason);
   QJsonObject plan;plan["valid"]=decision_.local_plan.valid;plan["maneuver"]=int(decision_.local_plan.maneuver);
   plan["reason"]=QString::fromStdString(decision_.local_plan.reason);QJsonArray points;

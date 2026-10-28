@@ -1,11 +1,8 @@
-# ARM build outputs; retain the original validated program and its runtime.
+# ARM build outputs.
 /build_adas/
 /build/
 /build-*/
-/build_release/*
-!/build_release/img_recv_demo
-!/build_release/librknnrt.so
-!/build_release/run_img_recv_demo.sh
+/build_release/
 /dist/
 
 # Local archives, calibration and session data.
@@ -55,3 +52,13 @@ desktop.ini
 
 # Required binary deliverables are intentionally versioned, including the driver.
 !drivers/*.ko
+
+# Retired experiments and machine-only state (archived outside this project).
+/.claude/
+/calibration/
+/models/incoming/
+/models/adas8-*/
+/models/adas-dual640-*/
+/models/adas/activation.json
+/models/yolov5n-coco-640-2026-10-27/yolov5n.rknn
+/check*_optimize.onnx

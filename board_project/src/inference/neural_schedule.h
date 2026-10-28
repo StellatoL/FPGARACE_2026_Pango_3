@@ -5,35 +5,46 @@
 #include <cmath>
 namespace adas {
 struct NeuralTask {
-  enum Kind {Scene,Lane,Navigation,Signal};
-  Kind kind=Scene;ViewId view=ViewId::Front;int slot=-1;
+  enum Kind {Traffic,Vehicle};
+  Kind kind=Traffic;ViewId view=ViewId::Front;int slot=-1;
   explicit operator bool()const{return slot>=0;}
 };
 class NeuralSchedule {
 public:
-  NeuralTask next(Layout layout,TurnSignal intent,double now,uint64_t sequence,bool lane_enabled=true) {
+  NeuralTask next(Layout layout,TurnSignal intent,double now,uint64_t sequence) {
+    if(!std::isfinite(now)||now<0||!sequence)return {};
     NeuralTask best;double earliest=1e30;
-    for(int i=0;i<7;++i) {
-      if(i==5||(!lane_enabled&&i==4))continue; // Navigation is supplied by the driver.
-      if(layout==Layout::Single&&i>0&&i<4)continue;
-      if(sequence<=sequence_[i])continue;
-      const double due=started_[i]?time_[i]+period(i,layout,intent):0;
-      if(due<=now&&due<earliest){earliest=due;best={i<4?NeuralTask::Scene:i==4?NeuralTask::Lane:i==5?NeuralTask::Navigation:NeuralTask::Signal,i<4?static_cast<ViewId>(i):ViewId::Front,i};}
+    const int role=dual_role_;
+    for(int view=0;view<(layout==Layout::Single?1:4);++view) {
+      if(sequence<=dual_sequence_[role][view])continue;
+      const double due=dual_started_[role][view]?dual_time_[role][view]+dual_period(view,intent):0;
+      const auto priority=[&](int candidate){
+        if(candidate==0)return 0;
+        if(intent!=TurnSignal::None&&candidate==(intent==TurnSignal::Left?3:1))return 1;
+        return candidate+2;
+      };
+      if(due<=now&&(due<earliest||(due==earliest&&best&&priority(view)<priority(int(best.view))))) {
+        earliest=due;best={role==0?NeuralTask::Vehicle:NeuralTask::Traffic,static_cast<ViewId>(view),role*4+view};
+      }
     }
-    if(best){const auto i=best.slot;started_[i]=true;time_[i]=now;sequence_[i]=sequence;}
+    if(best) {
+      const int view=int(best.view);
+      dual_started_[role][view]=true;dual_time_[role][view]=now;dual_sequence_[role][view]=sequence;
+      dual_role_=1-role;
+    }
     return best;
   }
-  void reset(){time_={};sequence_={};started_={};}
-private:
-  static double period(int i,Layout layout,TurnSignal intent) {
-    if(i==0)return layout==Layout::Single?1./12:1./8;
-    if(i==4)return layout==Layout::Single?1./12:1./10;
-    if(i>=5)return .25; // Independent authoritative ROIs must fit the 500ms freshness window.
+  static double dual_period(int view,TurnSignal intent) {
+    if(view==0)return 1./8;
     if(intent==TurnSignal::None)return .5;
-    const int target=intent==TurnSignal::Left?3:1;
-    return i==target?.25:1.;
+    return view==(intent==TurnSignal::Left?3:1)?.25:1.;
   }
-  std::array<double,7> time_{};std::array<uint64_t,7> sequence_{};std::array<bool,7> started_{};
+  void reset(){dual_time_={};dual_sequence_={};dual_started_={};dual_role_=0;}
+private:
+  std::array<std::array<double,4>,2> dual_time_{};
+  std::array<std::array<uint64_t,4>,2> dual_sequence_{};
+  std::array<std::array<bool,4>,2> dual_started_{};
+  int dual_role_=0;
 };
 }
 #endif

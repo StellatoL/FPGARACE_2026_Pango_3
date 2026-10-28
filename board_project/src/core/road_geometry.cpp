@@ -1,18 +1,12 @@
 #include "core/road_geometry.h"
 
-#include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/video/tracking.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <sstream>
 
 namespace adas {
 namespace {
-double cross(cv::Point a, cv::Point b) { return double(a.x)*b.y-double(a.y)*b.x; }
-bool finite(cv::Point2f p) { return std::isfinite(p.x) && std::isfinite(p.y); }
-
 struct Boundary {
   bool valid = false;
   double slope = 0, intercept = 0;
@@ -414,196 +408,30 @@ LaneInfo lanes(const cv::Mat &bgr,const cv::Mat &native = {}) {
   return lane;
 }
 
-NavInfo navigation(const cv::Mat &bgr, const Roi &roi) {
-  NavInfo result;
-  if (!std::isfinite(roi.x) || !std::isfinite(roi.y) || !std::isfinite(roi.w) || !std::isfinite(roi.h) || roi.w<=0 || roi.h<=0) return result;
-  const double x0=std::clamp(roi.x,0.0,1.0),y0=std::clamp(roi.y,0.0,1.0);
-  const double x1=std::clamp(roi.x+roi.w,0.0,1.0),y1=std::clamp(roi.y+roi.h,0.0,1.0);
-  const cv::Rect region(cvRound(x0*bgr.cols),cvRound(y0*bgr.rows),cvRound((x1-x0)*bgr.cols),cvRound((y1-y0)*bgr.rows));
-  if (region.width<8 || region.height<8 || (region & cv::Rect(0,0,bgr.cols,bgr.rows)) != region) return result;
-  cv::Mat hsv,blue,green,mask;
-  cv::cvtColor(bgr(region),hsv,cv::COLOR_BGR2HSV);
-  cv::inRange(hsv,cv::Scalar(88,95,80),cv::Scalar(135,255,255),blue);
-  cv::inRange(hsv,cv::Scalar(35,95,80),cv::Scalar(88,255,255),green);
-  cv::bitwise_or(blue,green,mask);
-  cv::morphologyEx(mask,mask,cv::MORPH_OPEN,cv::getStructuringElement(cv::MORPH_RECT,{3,3}));
-  std::vector<std::vector<cv::Point>> contours;
-  cv::findContours(mask,contours,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
-  double best_area=0;
-  for (const auto &contour: contours) {
-    const double area=std::abs(cv::contourArea(contour));
-    if (area<std::max(70.0,region.area()*.001) || area<best_area) continue;
-    std::vector<cv::Point> poly;
-    cv::approxPolyDP(contour,poly,cv::arcLength(contour,true)*.018,true);
-    if (poly.size()<6 || poly.size()>10) continue;
-    const double orientation=cv::contourArea(poly,true)>0?1:-1;
-    std::vector<int> concave;
-    for (int i=0;i<int(poly.size());++i) {
-      const auto a=poly[i]-poly[(i+poly.size()-1)%poly.size()];
-      const auto b=poly[(i+1)%poly.size()]-poly[i];
-      if (cross(a,b)*orientation < -20) concave.push_back(i);
-    }
-    if (concave.size()!=2) continue;
-    const cv::Point2f a=poly[concave[0]],b=poly[concave[1]],across=b-a;
-    const double shaft_width=cv::norm(across);
-    if (shaft_width<5) continue;
-    cv::Point2f tail(0,0); int tails=0;
-    for (int index: concave) {
-      const cv::Point2f p=poly[index];
-      for (int neighbor: {(index+int(poly.size())-1)%int(poly.size()),(index+1)%int(poly.size())}) {
-        const cv::Point2f vector=cv::Point2f(poly[neighbor])-p;
-        const double len=cv::norm(vector);
-        if (len>shaft_width*.45 && std::abs(vector.dot(across))/(len*shaft_width)<.4) {
-          tail+=cv::Point2f(poly[neighbor]); ++tails;
-        }
-      }
-    }
-    if (tails!=2) continue;
-    tail*=.5f;
-    const cv::Point2f center=(a+b)*.5f,direction=center-tail;
-    const double length=cv::norm(direction);
-    if (length<shaft_width*.55) continue;
-    double head_extension=0;
-    for (auto p:poly) head_extension=std::max(head_extension,double((cv::Point2f(p)-center).dot(direction))/length);
-    if (head_extension<shaft_width*.35) continue;
-    Direction dir=Direction::None;
-    if (std::abs(direction.x)>std::abs(direction.y)*1.25) dir=direction.x<0?Direction::Left:Direction::Right;
-    else if (direction.y<0 && -direction.y>std::abs(direction.x)*1.25) dir=Direction::Straight;
-    if (dir==Direction::None) continue;
-    const auto box=cv::boundingRect(contour);
-    result.detected=true; result.dir=dir; result.confidence=.9f;
-    result.box={float(box.x+region.x),float(box.y+region.y),float(box.x+box.width+region.x),float(box.y+box.height+region.y)};
-    best_area=area;
-  }
-  return result;
-}
-
-cv::Mat road_mask(cv::Size size, const GroundCalibration &c, const std::vector<Box> &boxes) {
-  cv::Mat mask(size,CV_8U,cv::Scalar(0));
-  std::vector<cv::Point> polygon;
-  for (auto p:c.image_points()) polygon.emplace_back(cvRound(p.x),cvRound(p.y));
-  cv::fillConvexPoly(mask,polygon,cv::Scalar(255));
-  cv::erode(mask,mask,cv::getStructuringElement(cv::MORPH_RECT,{9,9}));
-  for (auto box:boxes) {
-    if (!std::isfinite(box.left) || !std::isfinite(box.top) || !std::isfinite(box.right) || !std::isfinite(box.bottom)) continue;
-    const int x0=cvRound(std::clamp(double(box.left)-8,0.0,double(size.width)));
-    const int y0=cvRound(std::clamp(double(box.top)-8,0.0,double(size.height)));
-    const int x1=cvRound(std::clamp(double(box.right)+8,0.0,double(size.width)));
-    const int y1=cvRound(std::clamp(double(box.bottom)+8,0.0,double(size.height)));
-    if (x1>x0 && y1>y0) mask(cv::Rect(x0,y0,x1-x0,y1-y0)).setTo(0);
-  }
-  return mask;
-}
-
-std::string calibration_key(const GroundCalibration &c) {
-  std::ostringstream stream; stream.precision(12);
-  stream << c.valid() << ':' << c.width_m() << ':' << c.length_m() << ':' << c.near_offset_m() << ':' << c.profile_identity();
-  for (auto p:c.image_points()) stream << ':' << p.x << ':' << p.y;
-  return stream.str();
-}
 } // namespace
 
-void RoadGeometry::reset() {
-  previous_gray_.release(); previous_mask_.release(); previous_stamp_={};
-  previous_observation_={}; calibration_key_.clear(); smoothed_speed_kmh_=-1; has_observation_=false;
-}
+void RoadGeometry::reset() {}
 
-SpeedResult RoadGeometry::analyze_speed(const cv::Mat &gray, const Stamp &stamp,
-                                       const GroundCalibration &c,
-                                       const std::vector<Box> &boxes) {
-  SpeedResult result;
-  const std::string key=calibration_key(c);
-  if (key!=calibration_key_) { previous_gray_.release(); previous_mask_.release(); smoothed_speed_kmh_=-1; calibration_key_=key; }
-  if (stamp.static_image) { previous_gray_.release(); smoothed_speed_kmh_=-1; result.reason="静态图片不估速"; return result; }
-  if (!c.is_compatible(gray.cols,gray.rows)) { previous_gray_.release(); smoothed_speed_kmh_=-1; result.reason="未标定或前视尺寸不匹配"; return result; }
-  const cv::Mat native_mask=road_mask(gray.size(),c,boxes);
-  cv::Mat flow_gray,mask;
-  const double flow_scale=std::min(1.,384./gray.cols);
-  const cv::Size flow_size(cvRound(gray.cols*flow_scale),cvRound(gray.rows*flow_scale));
-  cv::resize(gray,flow_gray,flow_size,0,0,cv::INTER_AREA);
-  cv::resize(native_mask,mask,flow_size,0,0,cv::INTER_NEAREST);
-  const double native_x=double(gray.cols)/flow_size.width,native_y=double(gray.rows)/flow_size.height;
-  const auto native=[&](cv::Point2f point) {
-    return cv::Point2f(float((point.x+.5)*native_x-.5),float((point.y+.5)*native_y-.5));
-  };
-  // Bounded work images keep the CPU budget independent of the display size.
-  // Calibration and all externally visible coordinates remain native pixels.
-  const auto remember=[&] { flow_gray.copyTo(previous_gray_); mask.copyTo(previous_mask_); previous_stamp_=stamp; };
-  if (previous_gray_.empty()) { remember(); result.reason="等待下一视频帧"; return result; }
-  const double dt=stamp.source_s-previous_stamp_.source_s;
-  if (!std::isfinite(dt) || dt<.005 || dt>.5) { remember(); smoothed_speed_kmh_=-1; result.reason="视频时间间隔无效"; return result; }
-  std::vector<cv::Point2f> before,after,back;
-  cv::goodFeaturesToTrack(previous_gray_,before,240,.015,5,previous_mask_,5);
-  result.features=int(before.size());
-  if (before.size()<12) { remember(); smoothed_speed_kmh_=-1; result.reason="路面纹理不足"; return result; }
-  std::vector<uchar> forward_ok,backward_ok;
-  std::vector<float> forward_error,backward_error;
-  cv::calcOpticalFlowPyrLK(previous_gray_,flow_gray,before,after,forward_ok,forward_error,{15,15},2);
-  cv::calcOpticalFlowPyrLK(flow_gray,previous_gray_,after,back,backward_ok,backward_error,{15,15},2);
-  std::vector<cv::Point2f> metric_before,metric_after;
-  for (size_t i=0;i<before.size();++i) {
-    if (!forward_ok[i] || !backward_ok[i] || forward_error[i]>35 || cv::norm(before[i]-back[i])>.6 || !finite(after[i])) continue;
-    const int x=cvRound(after[i].x),y=cvRound(after[i].y);
-    if (x<0 || y<0 || x>=mask.cols || y>=mask.rows || !mask.at<uchar>(y,x)) continue;
-    const auto a=c.map(native(before[i])),b=c.map(native(after[i]));
-    if (finite(a) && finite(b)) { metric_before.push_back(a); metric_after.push_back(b); }
-  }
-  remember(); result.features=int(metric_before.size());
-  if (metric_before.size()<12) { smoothed_speed_kmh_=-1; result.reason="可靠路面特征不足"; return result; }
-  cv::Mat inliers;
-  const cv::Mat transform=cv::estimateAffinePartial2D(metric_before,metric_after,inliers,cv::RANSAC,.10,2000,.995,10);
-  const int count=inliers.empty()?0:cv::countNonZero(inliers);
-  if (transform.empty() || count<12 || count<int(metric_before.size()*.55)) {
-    smoothed_speed_kmh_=-1; result.reason="路面运动不一致"; return result;
-  }
-  const double a=transform.at<double>(0,0),b=transform.at<double>(1,0);
-  const double scale=std::hypot(a,b),rotation=std::atan2(b,a);
-  if (!cv::checkRange(transform) || std::abs(scale-1)>.035 || std::abs(rotation)>.14) {
-    smoothed_speed_kmh_=-1; result.reason="路面模型缩放或旋转异常"; return result;
-  }
-  // Translation under rotation depends on the chosen ground origin. Without
-  // the measured car-to-near-edge offset that origin is unknown, so yaw above
-  // the optical-flow noise allowance (0.02 rad/s) cannot yield ego speed.
-  if (!c.distance_valid() && std::abs(rotation)/dt>.02) {
-    smoothed_speed_kmh_=-1; result.reason="未测车头偏移，转弯时视觉估速无效"; return result;
-  }
-  // With a calibrated ground plane, translation is metric even when image flow
-  // varies strongly with depth. Rotation is fitted separately from translation.
-  const double raw=std::hypot(transform.at<double>(0,2),transform.at<double>(1,2))/dt*3.6;
-  if (!std::isfinite(raw) || raw>220) { smoothed_speed_kmh_=-1; result.reason="视觉速度超出有效范围"; return result; }
-  smoothed_speed_kmh_=smoothed_speed_kmh_<0?raw:.65*smoothed_speed_kmh_+.35*raw;
-  result.valid=true; result.speed_kmh=float(smoothed_speed_kmh_); result.features=count; result.reason="已标定地平面视觉估速";
-  return result;
-}
-
-GeometryObservation RoadGeometry::analyze(const cv::Mat &bgr,const Stamp &stamp,
-                                        const GroundCalibration &c,const Roi &roi,
-                                        const std::vector<Box> &boxes) {
+GeometryObservation RoadGeometry::analyze_lane(const cv::Mat &bgr,const Stamp &stamp) {
   const auto start=std::chrono::steady_clock::now();
-  GeometryObservation result; result.stamp=stamp; result.width=bgr.cols; result.height=bgr.rows;
+  GeometryObservation result;
+  result.components=GeometryObservation::Lane;result.stamp=stamp;
+  result.width=bgr.cols;result.height=bgr.rows;
   if (bgr.empty() || bgr.type()!=CV_8UC3 || bgr.cols<32 || bgr.rows<32) {
-    reset(); result.status=Status::Failed; result.speed.reason="前视图像无效"; return result;
+    result.status=Status::Failed;return result;
   }
-  if (has_observation_ && (stamp.generation!=previous_observation_.stamp.generation ||
-      bgr.cols!=previous_observation_.width || bgr.rows!=previous_observation_.height)) reset();
-  // A paused source can still receive ROI/calibration changes. Re-evaluate the
-  // spatial outputs, while duplicate frames keep the optical-flow baseline.
-  const bool duplicate=has_observation_ && stamp.sequence==previous_observation_.stamp.sequence;
-  const bool reuse_speed=duplicate && calibration_key(c)==calibration_key_ &&
-                        stamp.static_image==previous_observation_.stamp.static_image;
-  cv::Mat gray; cv::cvtColor(bgr,gray,cv::COLOR_BGR2GRAY);
-  const double road_scale=std::min(1.,480./bgr.cols);
-  cv::Mat road_image;cv::resize(bgr,road_image,{},road_scale,road_scale,cv::INTER_AREA);
-  result.lane=lanes(road_image,bgr); result.nav=navigation(road_image,roi);
+  // Preserve the existing bounded fit and native paint corroboration. This
+  // entry has no navigation or optical-flow state, including on static frames.
+  const double scale=std::min(1.,480./bgr.cols);
+  cv::Mat road_image;cv::resize(bgr,road_image,{},scale,scale,cv::INTER_AREA);
+  result.lane=lanes(road_image,bgr);
   const float sx=float(bgr.cols)/road_image.cols,sy=float(bgr.rows)/road_image.rows;
   auto &lane=result.lane;
   lane.left_x*=sx;lane.right_x*=sx;lane.left_top_x*=sx;lane.right_top_x*=sx;
   lane.top_y*=sy;lane.bottom_y*=sy;
-  auto &box=result.nav.box;box.left*=sx;box.right*=sx;box.top*=sy;box.bottom*=sy;
-  result.speed=reuse_speed?previous_observation_.speed:analyze_speed(gray,stamp,c,boxes);
   result.status=Status::Valid;
   result.process_ms=float(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
-  previous_observation_=result; has_observation_=true;
   return result;
 }
+
 } // namespace adas

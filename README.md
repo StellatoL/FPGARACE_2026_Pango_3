@@ -1,6 +1,6 @@
-> **2026-10-25 当前板端工程入口：[`board_project/`](board_project/README.md)。**
-> 已接入airockchip/yolov5八类检测模型，包含原始PT、官方导出的ONNX、RK3568 INT8 RKNN、metadata及默认模型包；导航由N键手动输入。车道模型仍待提供，缺失时不授权变道，四路侧向安全判断保持。原FPGA通信、输入源按钮和驱动未改动；驱动明确位于[`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后从`board_project/`运行`./build.sh`，详见[模型接入规范](board_project/docs/model-replacement-roadmap.md)和[八类转换验证](board_project/docs/adas8-verification.md)。真实NPU/RGA接口已验证，识别精度和FPGA实流性能尚待验收。
-> 原有`arm/`、`fpga/`工程及下述历史验证说明原样保留；它们是独立版本，与`board_project/FPGA`不混用。
+> **2026-10-28 当前板端工程入口：[`board_project/`](board_project/README.md)。**
+> 默认启用640×640双模型交替推理：官方Rockchip YOLOv5n负责车辆/行人，原交通模型负责斑马线和灯色；仅保留ADAS和纯视频；ARM车牌识别、旧交通模式、旧8类/960兼容与开发素材已删除。传统车道、短时跟踪、键盘导航和四路侧向安全判断保留。原FPGA通信及按钮未改，驱动明确包含在[`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后进入`board_project/`执行`./build.sh`。四段单路视频352个采样、704次模型执行无失败/候选溢出；模型仍有误检/漏检，FPGA实流与完整实时性能未验收。见[模型与迁移](board_project/docs/model-replacement-roadmap.md)、[验证](board_project/docs/dual640-verification-2026-10-28.md)、[工程清理](board_project/docs/project-cleanup-2026-10-28.md)。
+> 原有`arm/`、`fpga/`工程及下述历史说明原样保留，与`board_project/FPGA`不混用。
 
 # RK3568_50H 四路环视与 ARM ADAS 工程
 

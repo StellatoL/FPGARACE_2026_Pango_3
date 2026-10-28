@@ -14,13 +14,10 @@ REQUIRED_FILES=(
   ZYNQ_video_show.pro
   third_party/rknn/include/rknn_api.h
   third_party/rknn/lib/librknnrt.so
-  third_party/ztu/cv.hpp
-  third_party/ztu/nn/structures.hpp
-  third_party/ztu/rk/ez_rknn.hpp
-  third_party/ztu/rk/rknn_dtype.hpp
-  models/traffic_yolov5.rknn
-  models/plate_yolov5.rknn
-  models/plate_lprnet.rknn
+  models/adas/manifest.json
+  models/adas/traffic.rknn
+  models/adas/vehicle.rknn
+  drivers/pango_pci_driver_mul.ko
   resources/style.qss
   config/adas.ini
 )
@@ -36,7 +33,7 @@ Usage: ./build.sh [--check] [--install-deps] [--clean] [--no-rga]
   --check         Check dependencies/assets/output safety, without building.
   --install-deps  Explicitly install missing Ubuntu/Debian build packages first.
   --clean         Remove an existing output only if this script marked it.
-  --no-rga        Diagnostic/legacy build; neural ADAS reports RGA unavailable.
+  --no-rga        Diagnostic build; neural ADAS reports RGA unavailable.
 Environment: BUILD_DIR (default: source/build_adas), BUILD_JOBS (default: 2),
              ADAS_BUILD_JOBS (legacy fallback), QMAKE_BIN (Qt 5 qmake).
 No driver, FPGA, model, or system RKNN installation is performed.
@@ -107,9 +104,6 @@ verify_repo_assets() {
   for asset in "${REQUIRED_FILES[@]}"; do
     [[ -s "$ROOT_DIR/$asset" ]] || fail "Required repository asset missing or empty: $asset"
   done
-  if [[ ! -s "$ROOT_DIR/models/yolov5s_traffic.rknn" ]]; then
-    log "Optional vehicle model models/yolov5s_traffic.rknn is absent; vehicle detection will be unavailable"
-  fi
 }
 
 install_missing_packages() {

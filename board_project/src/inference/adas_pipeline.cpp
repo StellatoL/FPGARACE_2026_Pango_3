@@ -1,18 +1,16 @@
 #include "inference/adas_pipeline.h"
-#include "common/vision_common.h"
-#include "core/plate_recognizer.h"
+#include "core/road_geometry.h"
+#include "core/tracked_overlays.h"
 #include "inference/neural_models.h"
 #include "inference/neural_schedule.h"
-#include "core/traffic_scene_detector.h"
 #include "core/view_tracker.h"
 #include <QCoreApplication>
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
-#include <sstream>
+#include <opencv2/imgproc.hpp>
 
 namespace adas {
 namespace {
@@ -37,131 +35,193 @@ struct PendingFrame {
     pending = std::move(packet); changed.notify_one(); return true;
   }
 };
-VisionFrameResult plate_overlays(const PlateFrameResult &plates) {
-  VisionFrameResult result;
-  result.mode = DetectionMode::PlateRecognition; result.model_ready = plates.model_ready;
-  result.error_message = plates.error_message;
-  struct Style { const char *key; int r, g, b; };
-  const Style types[] = {{u8"教练车",255,200,0},{u8"警车",255,255,255},
-    {u8"军车",255,255,255},{u8"使馆车",60,60,60},{u8"港澳车",60,60,60},
-    {u8"货车",255,200,0},{u8"新能源",0,200,80},{u8"标准车牌",0,100,255}};
-  const Style colors[] = {{u8"蓝",0,100,255},{u8"绿",0,200,80},{u8"黄",255,200,0},
-    {u8"白",220,220,220},{u8"黑",60,60,60}};
-  for (const auto &plate : plates.plates) {
-    OverlayBoxResult box;
-    box.left = plate.left; box.top = plate.top; box.right = plate.right; box.bottom = plate.bottom;
-    box.confidence = plate.confidence;
-    const Style *chosen = nullptr;
-    for (const auto &style : types) if (plate.plate_type.find(style.key) != std::string::npos) { chosen = &style; break; }
-    if (!chosen) for (const auto &style : colors) if (plate.color == style.key) { chosen = &style; break; }
-    if (chosen) { box.color_r = chosen->r; box.color_g = chosen->g; box.color_b = chosen->b; }
-    std::ostringstream label;
-    if (!plate.text.empty()) label << plate.text;
-    if (!plate.plate_type.empty()) label << ' ' << plate.plate_type;
-    if (label.tellp() == 0) label << "plate";
-    label << ' ' << plate.confidence; box.label = label.str();
-    result.overlays.push_back(std::move(box));
-  }
-  return result;
-}
 } // namespace
 
 struct DetectionWorker::State : PendingFrame {
-  QString model_root;DetectionMode mode=DetectionMode::Adas;GroundCalibration calibration;
-  std::array<Roi,3> light_rois{};Roi navigation{0,0,.32,.30};TurnSignal intent=TurnSignal::None;
+  QString model_root;
+  DetectionMode mode=DetectionMode::Adas;
+  GroundCalibration calibration;
+  std::array<Roi,3> light_rois{};
+  TurnSignal intent=TurnSignal::None;
+  uint64_t config_revision=0;
 };
 DetectionWorker::DetectionWorker(QObject *parent):QThread(parent),state_(new State){
-  qRegisterMetaType<VisionFrameResult>("VisionFrameResult");qRegisterMetaType<GeometryObservation>("adas::GeometryObservation");
+  qRegisterMetaType<VisionFrameResult>("VisionFrameResult");
 }
 DetectionWorker::~DetectionWorker(){stop();}
-void DetectionWorker::set_model_root(QString root){std::lock_guard<std::mutex> l(state_->mutex);state_->model_root=std::move(root);}
-void DetectionWorker::set_mode(DetectionMode mode){std::lock_guard<std::mutex> l(state_->mutex);state_->mode=mode;state_->pending={};state_->changed.notify_all();}
-void DetectionWorker::configure(GroundCalibration c,std::array<Roi,3> r,Roi n){std::lock_guard<std::mutex> l(state_->mutex);state_->calibration=std::move(c);state_->light_rois=r;state_->navigation=n;}
-void DetectionWorker::set_intent(TurnSignal signal){std::lock_guard<std::mutex> l(state_->mutex);state_->intent=signal;state_->changed.notify_all();}
-void DetectionWorker::submit(FramePacket packet){std::lock_guard<std::mutex> l(state_->mutex);if(state_->mode!=DetectionMode::RawVideo)state_->accept(std::move(packet));}
+void DetectionWorker::set_model_root(QString root){
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if(state_->model_root==root)return;
+  state_->model_root=std::move(root);++state_->config_revision;
+  state_->changed.notify_all();
+}
+void DetectionWorker::set_mode(DetectionMode mode){
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if(state_->mode==mode)return;
+  state_->mode=mode;++state_->config_revision;state_->pending={};state_->changed.notify_all();
+}
+void DetectionWorker::configure(GroundCalibration calibration,std::array<Roi,3> light_rois){
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  state_->calibration=std::move(calibration);state_->light_rois=light_rois;
+  ++state_->config_revision;state_->pending={};state_->changed.notify_all();
+}
+void DetectionWorker::set_intent(TurnSignal signal){
+  std::lock_guard<std::mutex> lock(state_->mutex);state_->intent=signal;state_->changed.notify_all();
+}
+void DetectionWorker::submit(FramePacket packet){
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if(state_->mode==DetectionMode::Adas)state_->accept(std::move(packet));
+}
 uint64_t DetectionWorker::dropped_frames()const{return state_->dropped.load();}
 void DetectionWorker::stop(){
-  {std::lock_guard<std::mutex> l(state_->mutex);state_->stopping=true;state_->pending={};}
+  {std::lock_guard<std::mutex> lock(state_->mutex);state_->stopping=true;state_->pending={};}
   state_->changed.notify_all();if(QThread::currentThread()!=this)wait();
 }
 void DetectionWorker::run(){
-  PlateRecognizer plates;TrafficSceneDetector legacy;bool plate_attempted=false,legacy_attempted=false;
   NeuralSchedule schedule;ViewTracker tracker;std::unique_ptr<NeuralModels> models;
-  uint64_t generation=0;bool have_generation=false,missing_lane_reported=false;QString loaded_root;
-  DetectionMode previous=DetectionMode::RawVideo;
+  uint64_t generation=0,revision=0;bool have_generation=false;QString loaded_root;
   for(;;){
-    FramePacket packet;DetectionMode mode;QString root;GroundCalibration calibration;
-    std::array<Roi,3> rois;Roi nav;TurnSignal intent;
+    FramePacket packet;QString root;GroundCalibration calibration;
+    std::array<Roi,3> rois;TurnSignal intent;uint64_t config_revision;
     {
       std::unique_lock<std::mutex> lock(state_->mutex);
       state_->changed.wait(lock,[&]{return state_->stopping||bool(state_->pending);});
       if(state_->stopping)return;
-      packet=state_->pending;mode=state_->mode;root=state_->model_root;calibration=state_->calibration;
-      rois=state_->light_rois;nav=state_->navigation;intent=state_->intent;
-      if(mode!=DetectionMode::Adas)state_->pending={};
+      packet=state_->pending;root=state_->model_root;calibration=state_->calibration;
+      rois=state_->light_rois;intent=state_->intent;config_revision=state_->config_revision;
     }
-    if(mode==DetectionMode::RawVideo)continue;
-    if(!have_generation||generation!=packet.stamp.generation||previous!=mode){
-      schedule.reset();tracker.reset();legacy.reset_tracking();missing_lane_reported=false;generation=packet.stamp.generation;have_generation=true;previous=mode;
+    if(!have_generation||generation!=packet.stamp.generation||revision!=config_revision){
+      schedule.reset();tracker.reset();generation=packet.stamp.generation;
+      revision=config_revision;have_generation=true;
     }
-    const auto current=[&]{std::lock_guard<std::mutex> l(state_->mutex);return !state_->stopping&&state_->mode==mode&&state_->generation==packet.stamp.generation;};
-    if(root.isEmpty())root=QCoreApplication::applicationDirPath();
-    if(mode!=DetectionMode::Adas){
-      VisionFrameResult result;
-      try {
-        if(mode==DetectionMode::PlateRecognition){if(!plate_attempted){plates.initialize(root.toStdString());plate_attempted=true;}result=plate_overlays(plates.infer_rgb565(packet.pixels->bytes.data(),packet.width,packet.height,packet.stride));}
-        else {if(!legacy_attempted){legacy.initialize(root.toStdString());legacy_attempted=true;}result=legacy.infer_rgb565(packet.pixels->bytes.data(),packet.width,packet.height,packet.stride);}
-      }catch(const std::exception&e){result.error_message=e.what();}
-      result.mode=mode;result.stamp=packet.stamp;result.observation.stamp=packet.stamp;
-      if(current())emit result_ready(std::move(result));
+    const auto current=[&]{
+      return !state_->stopping&&state_->mode==DetectionMode::Adas&&
+        state_->generation==packet.stamp.generation&&state_->config_revision==config_revision;
+    };
+    if(!packet.stamp.static_image&&monotonic_seconds()-packet.stamp.receive_s>.5){
+      std::unique_lock<std::mutex> lock(state_->mutex);
+      if(!state_->stopping)state_->changed.wait_for(lock,std::chrono::milliseconds(10));
       continue;
     }
-    if(!packet.stamp.static_image&&monotonic_seconds()-packet.stamp.receive_s>.5){
-      std::unique_lock<std::mutex> l(state_->mutex);if(!state_->stopping)state_->changed.wait_for(l,std::chrono::milliseconds(10));continue;
-    }
+    if(root.isEmpty())root=QCoreApplication::applicationDirPath();
     if(!models||loaded_root!=root){
       models=std::make_unique<NeuralModels>();models->initialize(root);loaded_root=root;
-      missing_lane_reported=false;schedule.reset();continue; // Consume the latest frame after model loading.
+      schedule.reset();continue; // Model loading may have outlived the selected frame.
     }
-    if(!models->lane_configured()&&!missing_lane_reported){
-      auto result=models->lane(packet);if(current())emit geometry_ready(std::move(result));missing_lane_reported=true;
-    }
-    auto task=schedule.next(packet.layout,intent,monotonic_seconds(),packet.stamp.sequence,models->lane_configured());
+    const auto task=schedule.next(packet.layout,intent,monotonic_seconds(),packet.stamp.sequence);
     if(!task){
-      std::unique_lock<std::mutex> l(state_->mutex);if(!state_->stopping)state_->changed.wait_for(l,std::chrono::milliseconds(10));continue;
+      std::unique_lock<std::mutex> lock(state_->mutex);
+      if(!state_->stopping)state_->changed.wait_for(lock,std::chrono::milliseconds(10));
+      continue;
     }
-    {std::lock_guard<std::mutex> l(state_->mutex);state_->consumed_generation=packet.stamp.generation;state_->consumed_sequence=packet.stamp.sequence;}
-    if(task.kind==NeuralTask::Lane){auto result=models->lane(packet);if(current())emit geometry_ready(std::move(result));continue;}
-    Roi crop{0,0,1,1};
-    if(task.kind==NeuralTask::Signal){
-      double x=1,y=1,right=0,bottom=0;
-      for(const auto&r:rois){x=std::min(x,r.x);y=std::min(y,r.y);right=std::max(right,r.x+r.w);bottom=std::max(bottom,r.y+r.h);}
-      crop={x,y,right-x,bottom-y};
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      if(!current())continue;
+      state_->consumed_generation=packet.stamp.generation;state_->consumed_sequence=packet.stamp.sequence;
     }
-    auto result=models->scene(packet,task.view,rois,nav,crop);
-    if(!current())continue;
-    auto &objects=result.vision.observation;
-    if(task.kind==NeuralTask::Signal){
-      objects.components=ObjectObservation::Signal;objects.obstacles.clear();result.vision.overlays.clear();
-      emit result_ready(std::move(result.vision));continue;
+    const auto role=task.kind==NeuralTask::Vehicle?SceneModelRole::Vehicle:SceneModelRole::Traffic;
+    auto result=models->scene(packet,task.view,rois,{0,0,1,1},role);
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      if(!current())continue;
     }
-    tracker.update(objects);
-    for(auto &o:objects.obstacles)if(task.view==ViewId::Front&&calibration.is_compatible(objects.width,objects.height))o.distance_m=float(calibration.distance(o.box));
-    emit result_ready(std::move(result.vision));
-    // Signal ROIs own their confirmation clocks. Full-frame
-    // empty detections must not repeatedly cancel a positive small ROI target.
+    if(role==SceneModelRole::Vehicle){
+      auto &objects=result.vision.observation;
+      tracker.update(objects);
+      for(auto &object:objects.obstacles){
+        if(object.predicted)object.distance_m=-1;
+        else if(task.view==ViewId::Front&&calibration.is_compatible(objects.width,objects.height))
+          object.distance_m=float(calibration.distance(object.box));
+      }
+      sync_tracking_overlays(result.vision,monotonic_seconds());
+    }
+    // Traffic observations keep their own components and never enter the
+    // primary person/vehicle tracker. Publish under the transition lock.
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if(current())emit result_ready(std::move(result.vision));
   }
 }
-// Retain source compatibility for legacy diagnostic callers. The production
-// controller uses DetectionWorker::geometry_ready; this worker never reads pixels.
-struct GeometryWorker::State : PendingFrame {bool enabled=false;};
+struct GeometryWorker::State : PendingFrame {
+  bool enabled=false;
+  uint64_t config_revision=0,published_generation=0,published_sequence=0;
+  bool has_published=false,has_consumed=false;
+};
 GeometryWorker::GeometryWorker(QObject*parent):QThread(parent),state_(new State){qRegisterMetaType<GeometryObservation>("adas::GeometryObservation");}
 GeometryWorker::~GeometryWorker(){stop();}
-void GeometryWorker::set_enabled(bool enabled){std::lock_guard<std::mutex> l(state_->mutex);state_->enabled=enabled;}
-void GeometryWorker::configure(GroundCalibration,Roi){}
-void GeometryWorker::update_objects(ObjectObservation){}
-void GeometryWorker::submit(FramePacket){ }
-uint64_t GeometryWorker::dropped_frames()const{return 0;}
-void GeometryWorker::stop(){{std::lock_guard<std::mutex> l(state_->mutex);state_->stopping=true;}state_->changed.notify_all();if(QThread::currentThread()!=this)wait();}
-void GeometryWorker::run(){std::unique_lock<std::mutex> l(state_->mutex);state_->changed.wait(l,[&]{return state_->stopping;});}
+void GeometryWorker::set_enabled(bool enabled){
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if(state_->enabled==enabled)return;
+  state_->enabled=enabled;++state_->config_revision;state_->pending={};state_->changed.notify_all();
+}
+void GeometryWorker::configure(GroundCalibration){
+  // A configuration transition cancels in-flight lane work.
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  ++state_->config_revision;state_->pending={};state_->changed.notify_all();
+}
+void GeometryWorker::submit(FramePacket packet){
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if(state_->enabled)state_->accept(std::move(packet));
+}
+uint64_t GeometryWorker::dropped_frames()const{return state_->dropped.load();}
+void GeometryWorker::stop(){
+  {std::lock_guard<std::mutex> lock(state_->mutex);state_->stopping=true;state_->pending={};++state_->config_revision;}
+  state_->changed.notify_all();if(QThread::currentThread()!=this)wait();
+}
+void GeometryWorker::run(){
+  RoadGeometry geometry;
+  using Clock=std::chrono::steady_clock;
+  const auto period=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1./15));
+  Clock::time_point next_due{};
+  const auto fresh=[](const Stamp &stamp){
+    const double age=monotonic_seconds()-stamp.receive_s;
+    return stamp.static_image||(std::isfinite(age)&&age>=0&&age<=.5);
+  };
+  for(;;){
+    FramePacket packet;uint64_t revision;
+    {
+      std::unique_lock<std::mutex> lock(state_->mutex);
+      state_->changed.wait(lock,[&]{return state_->stopping||(state_->enabled&&state_->pending&&
+        (!state_->has_consumed||state_->pending.stamp.generation!=state_->consumed_generation||state_->pending.stamp.sequence>state_->consumed_sequence));});
+      if(state_->stopping)return;
+      if(Clock::now()<next_due){state_->changed.wait_until(lock,next_due);continue;}
+      packet=state_->pending;revision=state_->config_revision;
+      state_->consumed_generation=packet.stamp.generation;state_->consumed_sequence=packet.stamp.sequence;
+      state_->has_consumed=true;
+      next_due=Clock::now()+period;
+    }
+    GeometryObservation result;
+    result.components=GeometryObservation::Lane;result.stamp=packet.stamp;
+    const auto rect=view_rect(packet.layout,ViewId::Front,packet.width,packet.height);
+    result.width=rect.w;result.height=rect.h;result.status=Status::Failed;
+    const bool was_fresh=fresh(packet.stamp);
+    const auto started=Clock::now();
+    if(was_fresh){
+      try {
+        cv::Mat packed(rect.h,rect.w,CV_8UC2,
+          const_cast<unsigned char*>(packet.pixels->bytes.data())+size_t(rect.y)*packet.stride+rect.x*2,
+          size_t(packet.stride));
+        cv::Mat bgr;cv::cvtColor(packed,bgr,cv::COLOR_BGR5652BGR);
+        result=geometry.analyze_lane(bgr,packet.stamp);
+      } catch(const std::exception &) {
+        result.status=Status::Failed;
+      }
+      result.process_ms=float(std::chrono::duration<double,std::milli>(Clock::now()-started).count());
+    }
+    {
+      // Publishing shares the transition lock so a finished validity check
+      // cannot race disable/configure. Slots must only enqueue this value.
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      if(state_->pending&&state_->pending.stamp.generation==packet.stamp.generation&&
+          state_->pending.stamp.sequence==packet.stamp.sequence)state_->pending={};
+      if(state_->stopping)return; // The local packet remains owned until here.
+      const bool newer=!state_->has_published||packet.stamp.generation>state_->published_generation||
+        (packet.stamp.generation==state_->published_generation&&packet.stamp.sequence>state_->published_sequence);
+      if(state_->enabled&&revision==state_->config_revision&&packet.stamp.generation==state_->generation&&
+          packet.stamp.sequence==state_->consumed_sequence&&newer&&was_fresh&&fresh(packet.stamp)){
+        state_->published_generation=packet.stamp.generation;state_->published_sequence=packet.stamp.sequence;state_->has_published=true;
+        emit result_ready(std::move(result));
+      }
+    }
+  }
+}
 }

@@ -1,10 +1,8 @@
 #ifndef DETECTION_MODE_H
 #define DETECTION_MODE_H
 
-// 检测模式枚举：支持三种模式热切换
+// ADAS inference and direct video display preserve their existing mode IDs.
 enum class DetectionMode {
-  PlateRecognition = 0, // 车牌识别模式
-  TrafficScene = 1,     // 交通场景检测模式
   RawVideo = 2,         // 纯视频模式（不做推理，仅显示）
   Adas = 3,
 };

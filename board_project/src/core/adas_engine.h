@@ -21,6 +21,10 @@ public:
   uint64_t generation() const { return generation_; }
   double front_timeout_s = .5, side_timeout_s = 1.5, external_speed_timeout_s = 1;
   float ttc_threshold_s = 2;
+  // The default profile requires all legacy obstacle sources. Only an explicit
+  // person/vehicle profile may leave Roadblock unconfigured.
+  unsigned required_obstacle_components = ObjectObservation::All;
+  bool separate_crosswalk_source = false;
 private:
   struct Confirm {
     unsigned bits = 0;
@@ -33,9 +37,11 @@ private:
   };
   bool accept(const Stamp &stamp, const Stamp &old);
   static bool fresh(const Stamp &stamp, double now, double timeout);
+  bool obstacle_sources_ready(int view, double now, double request_s = 0) const;
   void update_risk(const ObjectObservation &observation, unsigned component);
   std::array<ObjectObservation,4> objects_{};
   std::array<Stamp,4> traffic_stamps_{}, vehicle_stamps_{}, roadblock_stamps_{};
+  std::array<Stamp,4> crosswalk_stamps_{};
   LaneObservation lane_;
   NavigationObservation navigation_;
   SpeedSample speed_;
@@ -53,6 +59,9 @@ private:
   Confirm danger_confirm_;
   bool emergency_ = false;
   int clear_count_ = 0;
+  Confirm crosswalk_danger_confirm_;
+  bool crosswalk_emergency_ = false;
+  int crosswalk_clear_count_ = 0;
   struct Risk { bool latched = false; int clear_count = 0; float nearest = -1, ttc = -1; };
   std::array<Risk,3> risks_{};
   struct Sample { double t; float h, z; };

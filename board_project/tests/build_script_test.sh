@@ -12,16 +12,12 @@ new_fixture() {
   SOURCE_DIR="$CASE_DIR/source tree"
   TOOL_DIR="$CASE_DIR/tools"
   mkdir -p "$SOURCE_DIR" "$TOOL_DIR"
-  # Normalize only the fixture to expose behavioral failures in the old CRLF script.
-  tr -d '\r' < "$TEST_ROOT/build.sh" > "$SOURCE_DIR/build.sh"
-  cp "$TEST_ROOT/build_adas.sh" "$SOURCE_DIR/build_adas.sh"
-  chmod +x "$SOURCE_DIR/build.sh" "$SOURCE_DIR/build_adas.sh"
+  cp "$TEST_ROOT/build.sh" "$SOURCE_DIR/build.sh"
+  chmod +x "$SOURCE_DIR/build.sh"
   local asset
   for asset in ZYNQ_video_show.pro third_party/rknn/include/rknn_api.h \
-      third_party/ztu/cv.hpp third_party/ztu/nn/structures.hpp \
-      third_party/ztu/rk/ez_rknn.hpp third_party/ztu/rk/rknn_dtype.hpp \
-      models/traffic_yolov5.rknn models/plate_yolov5.rknn models/plate_lprnet.rknn \
-      models/yolov5s_traffic.rknn resources/style.qss config/adas.ini; do
+      models/adas/manifest.json models/adas/traffic.rknn models/adas/vehicle.rknn \
+      drivers/pango_pci_driver_mul.ko resources/style.qss config/adas.ini; do
     mkdir -p "$SOURCE_DIR/$(dirname "$asset")"
     printf 'fixture\n' > "$SOURCE_DIR/$asset"
   done
@@ -62,7 +58,7 @@ case "$(basename "$0")" in
 set -euo pipefail
 binary_dir="$(cd "$(dirname "$0")" && pwd -P)"
 [[ -s "$binary_dir/resources/style.qss" && -s "$binary_dir/config/adas.ini" ]]
-[[ -s "$binary_dir/models/traffic_yolov5.rknn" ]]
+[[ -s "$binary_dir/models/adas/manifest.json" && -s "$binary_dir/models/adas/traffic.rknn" && -s "$binary_dir/models/adas/vehicle.rknn" ]]
 [[ ":${LD_LIBRARY_PATH:-}:" == *":$binary_dir:"* ]]
 printf '%s\n' "$PWD" "$@"
 PROGRAM
@@ -142,9 +138,13 @@ test_rejects_wrong_platform_and_toolchain() {
 
 test_rejects_missing_assets_and_incompatible_runtime() {
   new_fixture assets
-  mv "$SOURCE_DIR/models/traffic_yolov5.rknn" "$CASE_DIR/saved-model"
-  expect_failure "$SOURCE_DIR/build.sh" --check
-  mv "$CASE_DIR/saved-model" "$SOURCE_DIR/models/traffic_yolov5.rknn"
+  local asset
+  for asset in models/adas/manifest.json models/adas/traffic.rknn models/adas/vehicle.rknn drivers/pango_pci_driver_mul.ko; do
+    mv "$SOURCE_DIR/$asset" "$CASE_DIR/saved-asset"
+    expect_failure "$SOURCE_DIR/build.sh" --check
+    grep -Fq "$asset" "$CASE_DIR/error.log"
+    mv "$CASE_DIR/saved-asset" "$SOURCE_DIR/$asset"
+  done
   export TEST_MISSING_SDK_LIB=1
   expect_failure "$SOURCE_DIR/build.sh" --check
   grep -q 'libstdc++' "$CASE_DIR/error.log"
@@ -202,15 +202,16 @@ test_clean_requires_owned_safe_directory() {
   [[ ! -e "$BUILD_DIR/sentinel" && -x "$BUILD_DIR/img_recv_demo" ]]
 }
 
-test_external_output_launcher_and_forwarder() {
+test_external_output_launcher() {
   new_fixture external
   export BUILD_DIR="$CASE_DIR/external output" ADAS_BUILD_JOBS=3 QMAKE_BIN="$TOOL_DIR/custom-qmake"
-  (cd /; "$SOURCE_DIR/build_adas.sh" --no-rga)
+  (cd /; "$SOURCE_DIR/build.sh" --no-rga)
   grep -q '^make -j3$' "$CASE_DIR/actions"
   [[ -s "$BUILD_DIR/librknnrt.so" ]]
-  (cd /; "$BUILD_DIR/run_img_recv_demo.sh" --adas 'relative clip.mp4') > "$CASE_DIR/launch.log"
+  (cd /; "$BUILD_DIR/run_img_recv_demo.sh" --mode raw --report 'relative report.json') > "$CASE_DIR/launch.log"
   grep -Fx -- "$SOURCE_DIR" "$CASE_DIR/launch.log"
-  grep -Fx -- 'relative clip.mp4' "$CASE_DIR/launch.log"
+  grep -Fx -- raw "$CASE_DIR/launch.log"
+  grep -Fx -- 'relative report.json' "$CASE_DIR/launch.log"
 }
 
 test_installation_requires_explicit_flag() {
@@ -250,7 +251,7 @@ for TEST_NAME in test_script_is_directly_executable \
     test_rejects_missing_assets_and_incompatible_runtime \
     test_default_build_is_incremental_and_preserves_release \
     test_clean_requires_owned_safe_directory \
-    test_external_output_launcher_and_forwarder \
+    test_external_output_launcher \
     test_installation_requires_explicit_flag \
     test_switching_rga_rebuilds_old_objects \
     test_rejects_invalid_arguments_before_side_effects; do

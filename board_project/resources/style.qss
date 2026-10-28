@@ -112,16 +112,14 @@ QPushButton#connect:hover {
 }
 
 /* 模式按钮 — 紫色系 */
-QPushButton#pushButton,
-QPushButton#Gray,
+QPushButton#adasMode,
 QPushButton#cam1 {
     background-color: #2a1a4a;
     border-color: #4a2a7a;
     color: #c0a0e0;
 }
 
-QPushButton#pushButton:hover,
-QPushButton#Gray:hover,
+QPushButton#adasMode:hover,
 QPushButton#cam1:hover {
     background-color: #3a2868;
     border-color: #8a5acc;
@@ -129,8 +127,7 @@ QPushButton#cam1:hover {
 }
 
 /* 模式按钮选中态 — 高亮当前检测模式，一眼可辨 */
-QPushButton#pushButton:checked,
-QPushButton#Gray:checked,
+QPushButton#adasMode:checked,
 QPushButton#cam1:checked {
     background-color: #6a3acc;
     border-color: #b48aff;

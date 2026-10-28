@@ -1,0 +1,31 @@
+{
+  "created_utc": "2026-10-28T01:50:07.529943+00:00",
+  "schema": 3,
+  "production_activation": true,
+  "contract_sources": [
+    "src/inference/neural_contract.cpp",
+    "tests/dual_manifest_test.cpp"
+  ],
+  "models": {
+    "traffic": {
+      "copied_from": "/home/cat/ADAS/models/traffic_yolov5.rknn",
+      "sha256": "62296449866eefb1391015cce7592007bd0fb35a6062cc510c72953bd4dd7db4",
+      "conversion": "Original artifact copied byte-for-byte; not reconverted."
+    },
+    "vehicle": {
+      "copied_from": "/home/cat/ADAS/models/yolov5n-coco-640-2026-10-27/yolov5n.rknn",
+      "sha256": "566c70942faccfcd854c4eab164d4dd1ff92b1aecbcdcd356f56605ff6fca131",
+      "conversion_metadata": "/home/cat/ADAS/models/yolov5n-coco-640-2026-10-27/model.meta.json",
+      "official_provenance": "/home/cat/ADAS/models/yolov5n-coco-640-2026-10-27/provenance.json"
+    }
+  },
+  "protected_before_after_sha256": {
+    "/home/cat/ADAS/models/adas/manifest.json": "1e118b168e213fccd90a69b71ec32fc621466a7917741be3d3b3bbb347ce9371",
+    "/home/cat/ADAS/models/adas/scene.rknn": "138ea72a84dd39e16bec969894d47026b54dae9c1473dfc350afc29c743d8031",
+    "/home/cat/ADAS/models/traffic_yolov5.rknn": "62296449866eefb1391015cce7592007bd0fb35a6062cc510c72953bd4dd7db4",
+    "/home/cat/ADAS/models/yolov5n-coco-640-2026-10-27/yolov5n.rknn": "566c70942faccfcd854c4eab164d4dd1ff92b1aecbcdcd356f56605ff6fca131",
+    "/home/cat/ADAS/models/yolov5n-coco-640-2026-10-27/yolov5n.onnx": "b3237d0f59a5d90ff6ecec3dca220e0ada8abd929f8a158b08b12e1a3bad7232"
+  },
+  "validation": "Read-only production read_neural_manifest; no NPU runtime initialized.",
+  "activated_utc": "2026-10-28T02:06:45.061298+00:00"
+}

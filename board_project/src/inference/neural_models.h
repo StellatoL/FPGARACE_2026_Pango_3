@@ -5,16 +5,25 @@
 #include "inference/neural_contract.h"
 #include <memory>
 namespace adas {
-struct NeuralSceneResult {VisionFrameResult vision;GeometryObservation navigation;};
-// All calls belong to one NPU executor. No DMA ownership or FPGA API here.
+struct NeuralInputMapping {
+  bool prepared=false;
+  int width=0,height=0;
+  ViewRect source_crop{0,0,0,0},content{0,0,0,0};
+};
+struct NeuralSceneResult {
+  VisionFrameResult vision;
+  SceneDecodeStats decode;
+  SceneModelRole role=SceneModelRole::Vehicle;
+  NeuralInputMapping input_mapping;
+};
+// Both model contexts belong to one NPU executor; no FPGA resources here.
 class NeuralModels {
 public:
   NeuralModels();~NeuralModels();
   bool initialize(const QString &root);
-  bool lane_configured() const;
   NeuralSceneResult scene(const FramePacket &packet,ViewId view,
-      const std::array<Roi,3> &light_rois,const Roi &nav_roi,const Roi &crop={0,0,1,1});
-  GeometryObservation lane(const FramePacket &packet);
+      const std::array<Roi,3> &light_rois,const Roi &crop={0,0,1,1},
+      SceneModelRole role=SceneModelRole::Vehicle);
   QString description() const;
 private:
   struct State;std::unique_ptr<State> state_;

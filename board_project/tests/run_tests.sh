@@ -13,32 +13,37 @@ if [[ "${ADAS_TEST_GUI_ONLY:-0}" != 1 ]]; then
 g++ "${ADAS_CXX_FLAGS[@]}" tests/frame_pipeline_test.cpp "${ADAS_QT_FLAGS[@]}" -o "$ADAS_TEST_BUILD/frame_test"
 "$ADAS_TEST_BUILD/frame_test"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/adas_engine_test.cpp src/core/adas_engine.cpp -o "$ADAS_TEST_BUILD/engine_test"
+for case in manual_controls tracking_decision dual_profile_engine; do
+  g++ "${ADAS_CXX_FLAGS[@]}" "tests/${case}_test.cpp" src/core/adas_engine.cpp -o "$ADAS_TEST_BUILD/${case}_test"
+  "$ADAS_TEST_BUILD/${case}_test"
+done
+g++ "${ADAS_CXX_FLAGS[@]}" tests/view_tracker_test.cpp -o "$ADAS_TEST_BUILD/view_tracker_test"
+"$ADAS_TEST_BUILD/view_tracker_test"
 "$ADAS_TEST_BUILD/engine_test"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/road_geometry_test.cpp src/core/road_geometry.cpp src/core/ground_calibration.cpp "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/geometry_test"
 "$ADAS_TEST_BUILD/geometry_test"
-g++ "${ADAS_CXX_FLAGS[@]}" tests/plate_text_codec_test.cpp src/common/plate_text_codec.cpp -o "$ADAS_TEST_BUILD/plate_test"
-"$ADAS_TEST_BUILD/plate_test"
 /usr/lib/qt5/bin/moc -Isrc src/inference/adas_pipeline.h -o "$ADAS_TEST_BUILD/moc_adas_pipeline.cpp"
-g++ "${ADAS_CXX_FLAGS[@]}" tests/neural_pipeline_test.cpp src/inference/adas_pipeline.cpp src/core/ground_calibration.cpp "$ADAS_TEST_BUILD/moc_adas_pipeline.cpp" "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/pipeline_test"
+g++ "${ADAS_CXX_FLAGS[@]}" tests/neural_pipeline_test.cpp src/inference/adas_pipeline.cpp src/core/road_geometry.cpp src/core/ground_calibration.cpp "$ADAS_TEST_BUILD/moc_adas_pipeline.cpp" "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/pipeline_test"
+g++ "${ADAS_CXX_FLAGS[@]}" tests/geometry_worker_test.cpp src/inference/adas_pipeline.cpp src/core/road_geometry.cpp src/core/ground_calibration.cpp "$ADAS_TEST_BUILD/moc_adas_pipeline.cpp" "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/geometry_worker_test"
+"$ADAS_TEST_BUILD/geometry_worker_test"
 "$ADAS_TEST_BUILD/pipeline_test"
-g++ "${ADAS_CXX_FLAGS[@]}" tests/neural_contract_test.cpp src/inference/neural_contract.cpp "${ADAS_QT_FLAGS[@]}" -o "$ADAS_TEST_BUILD/neural_contract_test"
-"$ADAS_TEST_BUILD/neural_contract_test"
-g++ "${ADAS_CXX_FLAGS[@]}" tests/neural_schedule_test.cpp -o "$ADAS_TEST_BUILD/neural_schedule_test"
-"$ADAS_TEST_BUILD/neural_schedule_test"
-g++ "${ADAS_CXX_FLAGS[@]}" -Ithird_party/rknn/include tests/neural_models_status_test.cpp src/inference/neural_contract.cpp src/inference/neural_models.cpp "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -Lthird_party/rknn/lib -lrknnrt -o "$ADAS_TEST_BUILD/neural_models_status_test"
-"$ADAS_TEST_BUILD/neural_models_status_test"
-python3 tests/model_bundle_test.py
-python3 tests/export_rk_scene_test.py
-/usr/lib/qt5/bin/moc -Isrc src/common/file_video_source.h -o "$ADAS_TEST_BUILD/moc_file_video_source.cpp"
-g++ "${ADAS_CXX_FLAGS[@]}" tests/file_video_source_test.cpp src/common/file_video_source.cpp "$ADAS_TEST_BUILD/moc_file_video_source.cpp" "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/file_test"
-"$ADAS_TEST_BUILD/file_test"
+for case in dual_manifest dual_scene_adapter; do
+  g++ "${ADAS_CXX_FLAGS[@]}" "tests/${case}_test.cpp" src/inference/neural_contract.cpp "${ADAS_QT_FLAGS[@]}" -o "$ADAS_TEST_BUILD/${case}_test"
+  "$ADAS_TEST_BUILD/${case}_test"
+done
+g++ "${ADAS_CXX_FLAGS[@]}" tests/dual_schedule_test.cpp -o "$ADAS_TEST_BUILD/dual_schedule_test"
+"$ADAS_TEST_BUILD/dual_schedule_test"
+g++ "${ADAS_CXX_FLAGS[@]}" -DPANGO_HAVE_RGA -Ithird_party/rknn/include tests/dual_neural_runtime_test.cpp src/inference/neural_contract.cpp src/inference/neural_models.cpp "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/dual_neural_runtime_test"
+"$ADAS_TEST_BUILD/dual_neural_runtime_test"
+g++ "${ADAS_CXX_FLAGS[@]}" tests/scene_postprocess_test.cpp src/inference/neural_contract.cpp "${ADAS_QT_FLAGS[@]}" -o "$ADAS_TEST_BUILD/scene_postprocess_test"
+"$ADAS_TEST_BUILD/scene_postprocess_test"
+
 fi
 if [[ "${ADAS_TEST_GUI:-1}" == 1 ]]; then
   [[ -x "$ADAS_APP_BUILD/img_recv_demo" ]] || { echo 'Build the app before GUI tests; set ADAS_APP_BUILD_DIR for external output' >&2; exit 1; }
   read -r -a ADAS_GUI_FLAGS <<< "$(pkg-config --cflags --libs Qt5Widgets Qt5Network Qt5Test)"
   /usr/lib/qt5/bin/moc -Isrc tests/adas_ui_test.cpp -o "$ADAS_TEST_BUILD/adas_ui_test.moc"
-  # Link only qmake's current object set; historical CPU geometry/replay
-  # objects can remain in an incremental output directory after their removal.
+  # Link only qmake's current object set.
   mapfile -t ADAS_OBJECTS < <(python3 - "$ADAS_APP_BUILD" <<'PYOBJECTS'
 import pathlib,re,sys
 root=pathlib.Path(sys.argv[1])

@@ -150,7 +150,8 @@ void isolated_signal_does_not_clear_objects() {
   p.stamp={1,5,.5,.5,false};engine.ingest(p);
   p.stamp={1,6,.6,.6,false};engine.ingest(p);
   assert(!engine.evaluate(ego,.6).brake_now);
-  assert(engine.evaluate(ego,.6).light==LightState::Green); // Duplicate red4 contributed no vote.
+  assert(engine.evaluate(ego,.6).light==LightState::Unknown);
+  assert(engine.evaluate(ego,.6).stop_required); // New red revokes green; duplicate red4 contributed no vote.
   p.stamp={1,7,.7,.7,false};engine.ingest(p);
   assert(engine.evaluate(ego,.7).light==LightState::Red);
 }
@@ -445,7 +446,85 @@ void single_input_rules_regressions() {
   side.stamp.sequence=2;side.vehicle_status=Status::Failed;e.ingest(side);
   assert(!e.evaluate(ego,.1).lane_change_allowed);
 }
+void new_stop_signal_revokes_green_until_new_confirmation() {
+  for(const auto interrupt:{LightState::Red,LightState::Yellow}) {
+    AdasEngine e;EgoState ego;
+    auto front=[&](int seq,Status vehicle=Status::Valid) {
+      auto p=objects(seq);p.signal_observation=false;p.vehicle_status=vehicle;
+      assert(e.ingest(p));
+    };
+    auto signal=[&](int seq,LightState color) {
+      SignalObservation p;p.stamp={1,uint64_t(seq),seq*.1,seq*.1,false};
+      p.status=Status::Valid;p.light=color;assert(e.ingest(p));
+    };
+    for(int seq=1;seq<=3;++seq){front(seq);signal(seq,LightState::Green);}
+    assert(e.evaluate(ego,.3).auto_driving);
+    front(4);signal(4,interrupt);
+    auto d=e.evaluate(ego,.4);
+    assert(d.stop_required&&!d.auto_driving&&d.light==LightState::Unknown);
+    ego.force_drive=true;d=e.evaluate(ego,.4);
+    assert(d.stop_required&&!d.auto_driving&&!d.alarm_red_run);
+    front(5,Status::Failed);signal(5,LightState::Unknown);
+    assert(!e.evaluate(ego,.5).auto_driving);
+    front(6);signal(6,LightState::Unknown);
+    assert(e.evaluate(ego,.6).stop_required&&!e.evaluate(ego,.6).auto_driving);
+    signal(7,LightState::Green);
+    SignalObservation duplicate;duplicate.stamp={1,7,.7,.7,false};
+    duplicate.status=Status::Valid;duplicate.light=LightState::Green;
+    for(int repeat=0;repeat<20;++repeat) {
+      assert(!e.ingest(duplicate));
+      d=e.evaluate(ego,.7);assert(d.stop_required&&!d.auto_driving);
+    }
+    signal(8,LightState::Green);
+    d=e.evaluate(ego,.8);assert(d.stop_required&&!d.auto_driving);
+    front(9);signal(9,LightState::Green);
+    d=e.evaluate(ego,.9);assert(!d.stop_required&&d.auto_driving&&d.light==LightState::Green);
+  }
+}
+void missing_lane_signal_cannot_use_another_lanes_authority() {
+  AdasEngine e;EgoState ego;
+  auto p=objects(1);p.stamp.static_image=true;p.has_lane_lights=true;
+  p.lane_lights={LightState::Red,LightState::Unknown,LightState::Green};
+  assert(e.ingest(p));
+  auto d=e.evaluate(ego,.1);
+  assert(d.stop_required&&!d.auto_driving&&d.light==LightState::Unknown);
+  ego.force_drive=true;assert(!e.evaluate(ego,.1).auto_driving);
+  ego.lane=LaneId::Left;d=e.evaluate(ego,.1);
+  assert(d.light==LightState::Red&&d.alarm_red_run&&d.auto_driving);
+  ego.force_drive=false;assert(!e.evaluate(ego,.1).auto_driving);
+  ego.lane=LaneId::Right;d=e.evaluate(ego,.1);
+  assert(d.light==LightState::Green&&d.auto_driving&&!d.stop_required);
+  p.stamp.sequence=2;p.lane_lights={LightState::Red,LightState::Black,LightState::Green};
+  assert(e.ingest(p));
+  ego.lane=LaneId::Center;assert(!e.evaluate(ego,.1).auto_driving);
+  ego.lane=LaneId::Right;assert(e.evaluate(ego,.1).auto_driving);
+  p.stamp.sequence=3;p.lane_lights[2]=LightState::Unknown;
+  assert(e.ingest(p));
+  for(auto lane:{LaneId::Center,LaneId::Right}) {
+    ego.lane=lane;ego.force_drive=true;
+    for(int repeat=0;repeat<20;++repeat) {
+      d=e.evaluate(ego,100);assert(d.light==LightState::Unknown&&d.stop_required&&!d.auto_driving);
+    }
+  }
+  ego.force_drive=false;ego.lane=LaneId::Right;p.lane_lights[2]=LightState::Green;
+  for(int seq=4;seq<=6;++seq) {
+    p.stamp={1,uint64_t(seq),seq*.1,seq*.1,false};assert(e.ingest(p));
+    d=e.evaluate(ego,seq*.1);
+    assert(d.auto_driving==(seq==6)&&d.stop_required==(seq!=6));
+  }
+  // An unlit ordinary road is still distinct from a partially observed junction.
+  e.reset(1);ego={};p=objects(1);p.stamp.static_image=true;
+  assert(e.ingest(p));assert(e.evaluate(ego,100).auto_driving);
+  p.view=ViewId::Left;p.light=LightState::Red;p.has_lane_lights=true;
+  p.lane_lights={LightState::Red,LightState::Unknown,LightState::Green};
+  assert(e.ingest(p));assert(e.evaluate(ego,100).auto_driving);
+  p.view=ViewId::Front;p.stamp.sequence=2;
+  p.lane_lights={LightState::Unknown,LightState::Unknown,LightState::Black};
+  assert(e.ingest(p));assert(e.evaluate(ego,100).auto_driving);
+}
 int main() {
+  new_stop_signal_revokes_green_until_new_confirmation();
+  missing_lane_signal_cannot_use_another_lanes_authority();
   required_capability_and_single_path_safety();
   planner_checks_transition_not_only_target_lane();
   independent_component_contracts();
