@@ -50,7 +50,6 @@ private:
   void accept_geometry(adas::GeometryObservation result);
   void tick();
   void render(double now);
-  void refresh_labels(double now);
   void refresh_stats(double now);
   void update_settings();
   void update_ego();
@@ -126,7 +125,6 @@ private:
   QCheckBox *auto_check_ = nullptr, *intersection_check_ = nullptr;
   QComboBox *lane_combo_ = nullptr, *signal_combo_ = nullptr, *force_lane_combo_ = nullptr, *nav_combo_ = nullptr;
   QDoubleSpinBox *speed_spin_ = nullptr, *limit_spin_ = nullptr;
-  QLabel *decision_label_ = nullptr, *alarm_label_ = nullptr, *speed_label_ = nullptr, *source_label_ = nullptr;
-  QLabel *stats_label_ = nullptr, *capability_label_ = nullptr, *calibration_label_ = nullptr;
+  QLabel *source_label_ = nullptr, *calibration_label_ = nullptr;
 };
 #endif

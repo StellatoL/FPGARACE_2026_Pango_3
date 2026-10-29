@@ -185,21 +185,24 @@ void controlled_junction_waits_for_fresh_confirmed_green() {
   auto d=engine.evaluate(ego,.81);assert(d.stop_required&&!d.auto_driving&&d.light!=LightState::Green);
   ego.force_drive=true;assert(!engine.evaluate(ego,.81).auto_driving);ego.force_drive=false;
   signal(100,.82,LightState::Unknown,Status::Failed);front(101,.82);
-  // Valid absence cannot reuse a green whose authority was lost to an outage.
+  assert(engine.evaluate(ego,.82).stop_required); // Failure retains unknown-junction safety.
+  ego.intersection_mode=true;
+  // Explicit junction mode still requires new green after valid absence.
   for(int i=101;i<=103;++i)signal(i,.9+(i-101)*.1,LightState::Unknown);
   front(104,1.1);assert(engine.evaluate(ego,1.1).stop_required);
   signal(104,1.2,LightState::Green);assert(engine.evaluate(ego,1.2).stop_required);
   signal(105,1.3,LightState::Green);assert(engine.evaluate(ego,1.3).stop_required);
   signal(106,1.4,LightState::Green);assert(!engine.evaluate(ego,1.4).stop_required);
+  ego.intersection_mode=false;
   for(int i=107;i<=109;++i)signal(i,1.5+(i-107)*.1,LightState::Unknown);
-  front(109,1.7);assert(!engine.evaluate(ego,1.7).stop_required); // Confirmed departure after fresh green.
+  front(109,1.7);assert(!engine.evaluate(ego,1.7).stop_required); // Valid empty removes implicit junction.
   engine.reset(1);front(1,.1);ego.intersection_mode=true;
   assert(engine.evaluate(ego,.1).stop_required); // Explicit intersection, unobserved lamp.
   ego.intersection_mode=false;
   for(int i=1;i<=3;++i)signal(i,i*.1,LightState::Red);
   for(int i=4;i<=6;++i)signal(i,i*.1,LightState::Unknown);
-  front(6,.6);assert(engine.evaluate(ego,.6).stop_required);
-  assert(engine.evaluate(ego,.6).light==LightState::Red); // Red cannot depart on absence.
+  front(6,.6);assert(!engine.evaluate(ego,.6).stop_required);
+  assert(engine.evaluate(ego,.6).light==LightState::Unknown); // Current valid empty replaces the old red.
 }
 ObjectObservation objects(int seq, LightState light = LightState::Unknown, ViewId view = ViewId::Front) {
   ObjectObservation p; p.stamp = {1, static_cast<uint64_t>(seq), seq * .1, seq * .1, false};
@@ -467,7 +470,7 @@ void new_stop_signal_revokes_green_until_new_confirmation() {
     front(5,Status::Failed);signal(5,LightState::Unknown);
     assert(!e.evaluate(ego,.5).auto_driving);
     front(6);signal(6,LightState::Unknown);
-    assert(e.evaluate(ego,.6).stop_required&&!e.evaluate(ego,.6).auto_driving);
+    assert(!e.evaluate(ego,.6).stop_required&&e.evaluate(ego,.6).auto_driving);
     signal(7,LightState::Green);
     SignalObservation duplicate;duplicate.stamp={1,7,.7,.7,false};
     duplicate.status=Status::Valid;duplicate.light=LightState::Green;
@@ -520,7 +523,9 @@ void missing_lane_signal_cannot_use_another_lanes_authority() {
   assert(e.ingest(p));assert(e.evaluate(ego,100).auto_driving);
   p.view=ViewId::Front;p.stamp.sequence=2;
   p.lane_lights={LightState::Unknown,LightState::Unknown,LightState::Black};
-  assert(e.ingest(p));assert(e.evaluate(ego,100).auto_driving);
+  assert(e.ingest(p));assert(!e.evaluate(ego,100).auto_driving); // An actual unlit lamp gives no permission.
+  p.stamp.sequence=3;p.lane_lights={};
+  assert(e.ingest(p));assert(e.evaluate(ego,100).auto_driving); // Fully empty valid frame removes implicit context.
 }
 int main() {
   new_stop_signal_revokes_green_until_new_confirmation();
@@ -544,7 +549,7 @@ int main() {
   for(int i=1;i<=3;++i)e.ingest(objects(i,LightState::Red));
   for(int i=4;i<=6;++i)e.ingest(objects(i,LightState::Green),2.0);
   e.ingest(objects(20));
-  assert(e.evaluate(ego,2.).light==LightState::Red);
+  assert(e.evaluate(ego,2.).light==LightState::Unknown); // Neither delayed green nor old red survives valid empty.
   auto close_vehicle=objects(21);close_vehicle.components=ObjectObservation::Vehicle;
   close_vehicle.obstacles={{10,42,{280,200,360,350},.9f,-1}};e.ingest(close_vehicle);
   assert(e.evaluate(ego,2.1).alarm_collision);

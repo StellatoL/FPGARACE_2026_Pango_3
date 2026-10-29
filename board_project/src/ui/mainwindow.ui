@@ -426,7 +426,7 @@
           <item row="0" column="0">
            <widget class="QLabel" name="framecount">
             <property name="text">
-             <string>实时帧率</string>
+             <string>FPGA输入帧率</string>
             </property>
            </widget>
           </item>
@@ -443,7 +443,7 @@
           <item row="1" column="0">
            <widget class="QLabel" name="label_9">
             <property name="text">
-             <string>总帧数</string>
+             <string>输入总帧数</string>
             </property>
            </widget>
           </item>

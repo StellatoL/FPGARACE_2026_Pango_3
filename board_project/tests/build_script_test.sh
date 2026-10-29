@@ -208,10 +208,13 @@ test_external_output_launcher() {
   (cd /; "$SOURCE_DIR/build.sh" --no-rga)
   grep -q '^make -j3$' "$CASE_DIR/actions"
   [[ -s "$BUILD_DIR/librknnrt.so" ]]
-  (cd /; "$BUILD_DIR/run_img_recv_demo.sh" --mode raw --report 'relative report.json') > "$CASE_DIR/launch.log"
-  grep -Fx -- "$SOURCE_DIR" "$CASE_DIR/launch.log"
-  grep -Fx -- raw "$CASE_DIR/launch.log"
-  grep -Fx -- 'relative report.json' "$CASE_DIR/launch.log"
+  local interpreter
+  for interpreter in sh bash; do
+    (cd /tmp; "$interpreter" "$BUILD_DIR/run_img_recv_demo.sh" --mode raw --report 'relative report.json') > "$CASE_DIR/launch.log"
+    grep -Fx -- "$SOURCE_DIR" "$CASE_DIR/launch.log"
+    grep -Fx -- raw "$CASE_DIR/launch.log"
+    grep -Fx -- 'relative report.json' "$CASE_DIR/launch.log"
+  done
 }
 
 test_installation_requires_explicit_flag() {

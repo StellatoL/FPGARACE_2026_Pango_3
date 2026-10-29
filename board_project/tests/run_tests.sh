@@ -10,10 +10,11 @@ read -r -a ADAS_CV_FLAGS <<< "$(pkg-config --cflags --libs opencv4)"
 read -r -a ADAS_QT_FLAGS <<< "$(pkg-config --cflags --libs Qt5Core)"
 ADAS_CXX_FLAGS=(-std=c++17 -O0 -Wall -Wextra -fPIC -pthread -Isrc -Ithird_party)
 if [[ "${ADAS_TEST_GUI_ONLY:-0}" != 1 ]]; then
+./tests/launcher_test.sh
 g++ "${ADAS_CXX_FLAGS[@]}" tests/frame_pipeline_test.cpp "${ADAS_QT_FLAGS[@]}" -o "$ADAS_TEST_BUILD/frame_test"
 "$ADAS_TEST_BUILD/frame_test"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/adas_engine_test.cpp src/core/adas_engine.cpp -o "$ADAS_TEST_BUILD/engine_test"
-for case in manual_controls tracking_decision dual_profile_engine; do
+for case in manual_controls tracking_decision dual_profile_engine operator_core; do
   g++ "${ADAS_CXX_FLAGS[@]}" "tests/${case}_test.cpp" src/core/adas_engine.cpp -o "$ADAS_TEST_BUILD/${case}_test"
   "$ADAS_TEST_BUILD/${case}_test"
 done

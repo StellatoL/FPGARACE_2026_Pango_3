@@ -1,6 +1,10 @@
-#!/usr/bin/env bash
-set -euo pipefail
-ADAS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export LD_LIBRARY_PATH="$ADAS_ROOT/third_party/rknn/lib:$ADAS_ROOT/build_adas${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-cd "$ADAS_ROOT"
-exec "$ADAS_ROOT/build_adas/img_recv_demo" "$@"
+#!/bin/sh
+set -eu
+ADAS_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+LAUNCHER="$ADAS_ROOT/build_adas/run_img_recv_demo.sh"
+if [ ! -x "$LAUNCHER" ]; then
+  printf '[launch] ERROR: Build launcher missing or not executable: %s\n' "$LAUNCHER" >&2
+  printf '[launch] Run "%s/build.sh" to prepare the build output.\n' "$ADAS_ROOT" >&2
+  exit 1
+fi
+exec "$LAUNCHER" "$@"

@@ -7,6 +7,8 @@
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDoubleSpinBox>
+#include <QDir>
+#include <QGroupBox>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -90,7 +92,97 @@ class AdasUiTest : public QObject {
     if(!file.open(QIODevice::ReadOnly))return {};
     return QJsonDocument::fromJson(file.readAll()).object();
   }
+  static void video(AdasController *c) {
+    std::vector<unsigned char> pixels(1280*720*2,0x32);
+    const double now=adas::monotonic_seconds();
+    c->displayed_=c->live_pool_.copy(pixels.data(),1280,720,2560,
+      {c->generation_.load(),1,now,now,true},static_cast<adas::Layout>(c->layout_.load()));
+  }
+  static bool red_banner(const QImage &image) {
+    int red=0;
+    // A visible warning must occupy the top of the video, beyond the thin
+    // border, without painting over the central obstacle area.
+    for(int y=image.height()/12;y<image.height()/3;++y)
+      for(int x=image.width()/8;x<image.width()*7/8;++x) {
+        const QColor p=image.pixelColor(x,y);
+        if(p.red()>120&&p.red()>p.green()+70&&p.red()>p.blue()+50)++red;
+      }
+    return red>image.width()*image.height()/50;
+  }
 private slots:
+  void no_separate_adas_status_group_or_labels() {
+    MainWindow window;auto *c=control(window);QVERIFY(c);c->timer_.stop();
+    for(auto *box:window.findChildren<QGroupBox*>())QVERIFY(box->title()!=QStringLiteral("ADAS 状态"));
+    for(const char *name:{"adasDecisionStatus","adasCapabilityStatus","adasSpeedStatus"})
+      QVERIFY(!window.findChild<QLabel*>(name));
+    for(const char *name:{"adasLane","adasTurnSignal","adasForceLane","adasNavigation"})
+      QVERIFY(window.findChild<QComboBox*>(name));
+    QVERIFY(window.findChild<QLabel*>("H_disp"));QVERIFY(window.findChild<QLabel*>("V_disp"));
+    QVERIFY(window.close());
+  }
+  void fpga_input_fps_counts_receives_including_pool_pressure() {
+    MainWindow window;auto *c=control(window);QVERIFY(c);c->timer_.stop();
+    const double now=adas::monotonic_seconds();
+    c->last_stats_s_=now-1;c->captured_=20;c->pool_dropped_=10;c->shown_=4;
+    c->last_captured_=c->last_shown_=0;c->refresh_stats(now);
+    QCOMPARE(c->capture_hz_,30.);QCOMPARE(c->preview_hz_,4.);
+    const auto r=report(c);QCOMPARE(r["received_frames"].toDouble(),30.);
+    QCOMPARE(r["captured_frames"].toDouble(),20.);QCOMPARE(r["rendered_frames"].toDouble(),4.);
+    QCOMPARE(r["pool_dropped"].toDouble(),10.);QCOMPARE(r["input_fps"].toDouble(),30.);
+    QCOMPARE(r["hud"].toObject()["input_fps"].toString(),QStringLiteral("FPGA输入 30.0 FPS"));
+    QVERIFY(window.findChild<QLabel*>("frame")->text().contains("30.0"));
+    QVERIFY(window.close());
+  }
+  void every_alarm_has_a_video_banner_data() {
+    QTest::addColumn<int>("alarm");QTest::addColumn<QString>("text");
+    QTest::newRow("pedestrian-brake")<<0<<QStringLiteral("行人急刹");
+    QTest::newRow("collision")<<1<<QStringLiteral("碰撞危险");
+    QTest::newRow("red-force")<<2<<QStringLiteral("红灯强行驶");
+    QTest::newRow("solid-force")<<3<<QStringLiteral("实线强制变道");
+    QTest::newRow("overspeed")<<4<<QStringLiteral("超速警告");
+    QTest::newRow("lane-departure")<<5<<QStringLiteral("车道偏离 / 压实线");
+  }
+  void every_alarm_has_a_video_banner() {
+    QFETCH(int,alarm);QFETCH(QString,text);
+    MainWindow window;window.show();window.resize(1024,600);window.set_single_view(true);
+    auto *c=control(window);QVERIFY(c);c->timer_.stop();QCoreApplication::processEvents();video(c);QVERIFY(c->displayed_);
+    c->decision_={};c->decision_.arrow=adas::Direction::Straight;
+    bool *flags[]={&c->decision_.brake_now,&c->decision_.alarm_collision,&c->decision_.alarm_red_run,
+      &c->decision_.alarm_illegal_lane_change,&c->decision_.alarm_overspeed,&c->decision_.alarm_lane_departure};
+    *flags[alarm]=true;c->render(adas::monotonic_seconds());
+    const auto evidence=qEnvironmentVariable("ADAS_TEST_EVIDENCE_DIR");
+    if(!evidence.isEmpty()) {
+      QDir().mkpath(evidence);c->screenshot(evidence+"/ui-"+QString::fromLatin1(QTest::currentDataTag())+".png");
+      window.grab().save(evidence+"/window-1024-"+QString::fromLatin1(QTest::currentDataTag())+".png");
+    }
+    QVERIFY2(red_banner(c->rendered_.toImage()),"Every alarm needs a clearly visible top video banner");
+    QVERIFY(report(c)["hud"].toObject()["alerts"].toArray().contains(text));
+    // A banner must leave the centre of the source image visible.
+    const QColor center=c->rendered_.toImage().pixelColor(1280/2,720/2);
+    QVERIFY(!(center.red()>120&&center.red()>center.green()+70));
+    QVERIFY(window.close());
+  }
+  void video_hud_reports_manual_navigation_motion_and_current_light() {
+    MainWindow window;window.show();window.set_single_view(true);auto *c=control(window);QVERIFY(c);c->timer_.stop();
+    seed(c);c->nav_combo_->setCurrentIndex(2);c->tick();video(c);c->render(adas::monotonic_seconds());
+    auto hud=report(c)["hud"].toObject();
+    QVERIFY(hud["navigation"].toString().contains(QStringLiteral("手动导航：直行")));
+    QCOMPARE(hud["motion"].toString(),QStringLiteral("模拟行驶"));
+    QCOMPARE(hud["light"].toString(),QStringLiteral("无信号"));
+    c->manual_stop_check_->setChecked(true);c->tick();
+    QCOMPARE(report(c)["hud"].toObject()["motion"].toString(),QStringLiteral("停车"));
+    QVERIFY(window.close());
+  }
+  void near_collision_overlay_is_short_and_does_not_change_input_pixels() {
+    MainWindow window;window.show();window.set_single_view(true);auto *c=control(window);QVERIFY(c);c->timer_.stop();video(c);
+    const auto original=c->displayed_.pixels->bytes;c->decision_={};c->render(adas::monotonic_seconds());
+    QCOMPARE(c->displayed_.pixels->bytes,original);
+    const auto image=c->rendered_.toImage();
+    const QColor outside=image.pixelColor(int(1280*.43),int(720*.80));
+    const QColor inside=image.pixelColor(int(1280*.43),int(720*.88));
+    QVERIFY2(inside.blue()>outside.blue(),"The displayed near zone must begin at .85 of front height");
+    QVERIFY(window.close());
+  }
   void verified_schema3_manifest_selects_profile_and_hash_failure_denies_it() {
     QTemporaryDir dir;QVERIFY(dir.isValid());
     const auto traffic=model_fixture(dir,"traffic.rknn",true),vehicle=model_fixture(dir,"vehicle.rknn",false);
@@ -189,8 +281,8 @@ private slots:
     QCOMPARE(r["crosswalk_age_ms"].toArray().size(),4);
     QVERIFY(r["crosswalk_age_ms"].toArray()[0].toDouble()>=0);
     QVERIFY(!r["roadblock_ready"].toBool());
-    QVERIFY(c->capability_label_->text().contains(QStringLiteral("斑马线")));
-    QVERIFY(c->capability_label_->text().contains(QStringLiteral("路障识别：未配置")));
+    QCOMPARE(r["crosswalk_status"].toInt(),int(adas::Status::Valid));
+    QVERIFY(!r["roadblock_ready"].toBool());
     c->advance_generation();
     const auto reset=report(c);QVERIFY(!reset["crosswalk_ready"].toBool());
     QCOMPARE(reset["crosswalk_sequence"].toDouble(),0.);
@@ -390,7 +482,7 @@ private slots:
     auto hazard=scene(c,3);hazard.stamp.static_image=true;hazard.observation.stamp=hazard.stamp;hazard.observation.light=adas::LightState::Green;
     hazard.observation.obstacles={{1,42,{560,300,700,680},.9f,-1}};send(c,hazard);
     QVERIFY(c->decision_.brake_now&&!c->decision_.auto_driving);
-    const QColor fill(c->rendered_.toImage().pixel(1280/8+5,720/4+5));QVERIFY(fill.red()>fill.green()+50);
+    QVERIFY(red_banner(c->rendered_.toImage()));
     QTest::keyClick(&window,Qt::Key_Up,Qt::ControlModifier);c->tick();QVERIFY(c->decision_.brake_now&&!c->decision_.auto_driving);
     const auto evidence=qEnvironmentVariable("ADAS_TEST_EVIDENCE_DIR");if(!evidence.isEmpty())c->screenshot(evidence+"/ui-brake-warning.png");
     QVERIFY(window.close());

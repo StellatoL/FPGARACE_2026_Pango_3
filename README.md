@@ -1,6 +1,7 @@
-> **2026-10-28 当前板端工程入口：[`board_project/`](board_project/README.md)。**
-> 默认启用640×640双模型交替推理：官方Rockchip YOLOv5n负责车辆/行人，原交通模型负责斑马线和灯色；仅保留ADAS和纯视频；ARM车牌识别、旧交通模式、旧8类/960兼容与开发素材已删除。传统车道、短时跟踪、键盘导航和四路侧向安全判断保留。原FPGA通信及按钮未改，驱动明确包含在[`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后进入`board_project/`执行`./build.sh`。四段单路视频352个采样、704次模型执行无失败/候选溢出；模型仍有误检/漏检，FPGA实流与完整实时性能未验收。见[模型与迁移](board_project/docs/model-replacement-roadmap.md)、[验证](board_project/docs/dual640-verification-2026-10-28.md)、[工程清理](board_project/docs/project-cleanup-2026-10-28.md)。
-> 原有`arm/`、`fpga/`工程及下述历史说明原样保留，与`board_project/FPGA`不混用。
+> **2026-10-29 当前板端工程入口：[`board_project/`](board_project/README.md)。**
+> 640×640 双模型交替推理，保留传统车道、短时跟踪、键盘导航和四路侧向安全判断。此版修复一键启动，将驾驶状态及全部警报移到视频内，改用 FPGA 输入 FPS，并修正灯色消失及碰撞近区判定；原深色配色、FPGA 通信和原控制按钮保持不变。驱动完整包含在 [`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后进入 `board_project/` 执行 `./build.sh`，再执行 `./run_adas.sh`。
+> 四段单路视频352个采样、704次推理无失败或候选溢出，另验证6个真实图片场景；39项 Qt 回归通过。30fps 内存喂帧实测每模型6.83～7.08Hz、传统车道11.25～14.08Hz，尚未达到8Hz/15Hz预算；真实 FPGA 实流及显示总延迟仍待验收。详见[本轮验证与性能](board_project/docs/operator-hdmi-verification-2026-10-29.md)、[模型接入](board_project/docs/model-replacement-roadmap.md)、[迁移说明](board_project/docs/rk3568-migration.md)和[工程清理](board_project/docs/project-cleanup-2026-10-28.md)。构建目录、测试素材和临时日志不纳入发布。
+> 原有 `arm/`、`fpga/` 工程及下述历史说明原样保留，与 `board_project/FPGA` 不混用。
 
 # RK3568_50H 四路环视与 ARM ADAS 工程
 

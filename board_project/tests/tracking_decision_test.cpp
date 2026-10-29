@@ -26,8 +26,8 @@ int main(){
  assert(!engine.evaluate(ego,.4).lane_change_allowed); // A low confidence coast still vetoes.
  assert(engine.evaluate(ego,.7).lane_change_allowed); // Cached prediction must expire at consumption.
  engine.reset(1);ego.signal=TurnSignal::None;
- for(int i=1;i<=2;++i){p=frame(i,i*.1);p.obstacles={{10,42,{280,200,360,260},.9f,10}};engine.ingest(p,i*.1);}
- p=frame(3,.3);auto fake=prediction(10,{280,190,360,270},.2);fake.distance_m=1;p.obstacles={fake};engine.ingest(p,.3);
+ for(int i=1;i<=2;++i){p=frame(i,i*.1);p.obstacles={{10,42,{280,190,360,250},.9f,10}};engine.ingest(p,i*.1);}
+ p=frame(3,.3);auto fake=prediction(10,{280,180,360,260},.2);fake.distance_m=1;p.obstacles={fake};engine.ingest(p,.3);
  const auto result=engine.evaluate(ego,.3);assert(result.ttc_s<0&&result.nearest_obstacle_m<0&&!result.alarm_collision);
  std::cout<<"Predictions cannot vote, clear danger, measure TTC/distance or outlive consumer TTL: PASS\n";
 }

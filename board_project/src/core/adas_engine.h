@@ -38,7 +38,7 @@ private:
   bool accept(const Stamp &stamp, const Stamp &old);
   static bool fresh(const Stamp &stamp, double now, double timeout);
   bool obstacle_sources_ready(int view, double now, double request_s = 0) const;
-  void update_risk(const ObjectObservation &observation, unsigned component);
+  void update_risk(const ObjectObservation &observation, unsigned component, double now_s);
   std::array<ObjectObservation,4> objects_{};
   std::array<Stamp,4> traffic_stamps_{}, vehicle_stamps_{}, roadblock_stamps_{};
   std::array<Stamp,4> crosswalk_stamps_{};
@@ -51,7 +51,6 @@ private:
   std::array<bool,3> junction_context_{}, green_ready_{};
   std::array<std::array<Confirm,3>,3> light_confirm_{};
   std::array<LightState,3> lights_{};
-  std::array<Confirm,3> no_signal_confirm_{};
   std::array<Confirm,3> nav_confirm_{};
   Direction confirmed_nav_ = Direction::None;
   Confirm left_solid_, left_dashed_, right_solid_, right_dashed_;

@@ -208,11 +208,24 @@ build_project() {
   (cd "$BUILD_DIR"; "$QMAKE_BIN" "${qmake_arguments[@]}"; make -j"$BUILD_JOBS")
   cp --remove-destination -- "$ROOT_DIR/third_party/rknn/lib/librknnrt.so" "$BUILD_DIR/librknnrt.so"
   cat > "$BUILD_DIR/run_img_recv_demo.sh" <<'LAUNCHER'
-#!/usr/bin/env bash
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-MODEL_DIR="$(cd "$SCRIPT_DIR/models" && pwd -P)"
-REPO_ROOT="$(dirname "$MODEL_DIR")"
+#!/bin/sh
+set -eu
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+fail() {
+  printf '[launch] ERROR: %s\n' "$*" >&2
+  printf '[launch] Run the project build.sh to restore the build output.\n' >&2
+  exit 1
+}
+[ -x "$SCRIPT_DIR/img_recv_demo" ] || fail "Built program missing or not executable: $SCRIPT_DIR/img_recv_demo"
+for resource in models resources config; do
+  [ -d "$SCRIPT_DIR/$resource" ] || fail "Build resource directory missing: $SCRIPT_DIR/$resource"
+done
+for resource in models/adas/manifest.json resources/style.qss config/adas.ini librknnrt.so; do
+  [ -r "$SCRIPT_DIR/$resource" ] && [ -s "$SCRIPT_DIR/$resource" ] ||
+    fail "Build resource missing, empty, or unreadable: $SCRIPT_DIR/$resource"
+done
+MODEL_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/models" && pwd -P)"
+REPO_ROOT="$(dirname -- "$MODEL_DIR")"
 export LD_LIBRARY_PATH="$SCRIPT_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cd "$REPO_ROOT"
 exec "$SCRIPT_DIR/img_recv_demo" "$@"

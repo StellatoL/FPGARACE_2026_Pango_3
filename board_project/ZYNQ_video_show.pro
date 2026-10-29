@@ -27,6 +27,7 @@ HEADERS += \
     src/core/adas_types.h \
     src/core/manual_controls.h \
     src/core/local_planner.h \
+    src/core/collision_geometry.h \
     src/core/tracking_evidence.h \
     src/core/tracked_overlays.h \
     src/core/view_tracker.h \

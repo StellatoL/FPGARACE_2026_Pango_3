@@ -1,4 +1,5 @@
 #include "core/adas_engine.h"
+#include "core/collision_geometry.h"
 #include "core/local_planner.h"
 #include "core/tracking_evidence.h"
 #include <algorithm>
@@ -105,48 +106,52 @@ bool AdasEngine::ingest(const SignalObservation &p,double now_s) {
   signal_stamp_=p.stamp;signal_status_=p.status;
   const bool valid=p.status==Status::Valid&&fresh(p.stamp,now_s,front_timeout_s);
   if(!valid||gap) {
-    light_confirm_={};no_signal_confirm_={};green_ready_={};
-    // Preserve junction context and stop latches. Departure on valid empty
-    // observations requires a newly confirmed green after any signal outage.
+    light_confirm_={};green_ready_={};lights_={};
+    // Failure is not an empty scene: hide old labels while preserving the
+    // safety context until a fresh valid observation describes the junction.
     if(!valid)return true;
   }
   const bool lane_signal_context=p.has_lane_lights&&std::any_of(p.lane_lights.begin(),p.lane_lights.end(),
-    [](LightState light){return light==LightState::Red||light==LightState::Yellow||light==LightState::Green;});
+    [](LightState light){return light!=LightState::Unknown;});
   for(int lane=0;lane<3;++lane) {
     const auto raw=p.has_lane_lights?p.lane_lights[lane]:p.light;
     const bool no_signal=raw==LightState::Unknown||raw==LightState::Black;
-    if(raw==LightState::Red||raw==LightState::Yellow||(lane_signal_context&&no_signal)) {
-      // A new stop indication or an unobserved lane at a known signal cannot
-      // borrow the previous green. Keep the label's existing confirmation rule.
-      junction_context_[lane]=true;green_ready_[lane]=false;light_confirm_[lane][2]={};
+    if(no_signal) {
+      lights_[lane]=LightState::Unknown;light_confirm_[lane]={};green_ready_[lane]=false;
+      // A valid fully empty frame removes an implicit junction. A black lamp
+      // or an unobserved lane beside detected lamps still has no permission.
+      junction_context_[lane]=raw==LightState::Black||lane_signal_context;
+      continue;
     }
+    junction_context_[lane]=true;
+    if(raw!=LightState::Green){green_ready_[lane]=false;light_confirm_[lane][2]={};}
+    if(raw!=lights_[lane])lights_[lane]=LightState::Unknown;
     const bool red=light_confirm_[lane][0].update(raw==LightState::Red,p.stamp.static_image);
     const bool yellow=light_confirm_[lane][1].update(raw==LightState::Yellow,p.stamp.static_image);
     const bool green=light_confirm_[lane][2].update(raw==LightState::Green,p.stamp.static_image);
-    const bool left_junction=no_signal_confirm_[lane].update(no_signal,p.stamp.static_image)&&no_signal;
-    if(red){lights_[lane]=LightState::Red;junction_context_[lane]=true;green_ready_[lane]=false;}
-    else if(yellow){lights_[lane]=LightState::Yellow;junction_context_[lane]=true;green_ready_[lane]=false;}
-    else if(green&&raw==LightState::Green){lights_[lane]=LightState::Green;junction_context_[lane]=true;green_ready_[lane]=true;}
-    if(left_junction&&lights_[lane]==LightState::Green&&green_ready_[lane]) {
-      lights_[lane]=LightState::Unknown;junction_context_[lane]=false;green_ready_[lane]=false;
-    }
+    if(red&&raw==LightState::Red)lights_[lane]=LightState::Red;
+    else if(yellow&&raw==LightState::Yellow)lights_[lane]=LightState::Yellow;
+    else if(green&&raw==LightState::Green){lights_[lane]=LightState::Green;green_ready_[lane]=true;}
   }
   return true;
 }
-void AdasEngine::update_risk(const ObjectObservation &p,unsigned component) {
+void AdasEngine::update_risk(const ObjectObservation &p,unsigned component,double now_s) {
   const int kind=component==ObjectObservation::Traffic?0:component==ObjectObservation::Vehicle?1:2;
   auto &risk=risks_[kind];
   risk.nearest=-1; risk.ttc=-1;
   const Status status=kind==0?p.traffic_status:kind==1?p.vehicle_status:p.roadblock_status;
   if(status!=Status::Valid||p.width<=0||p.height<=0)return;
+  auto road=lane_;
+  if(!fresh(road.stamp,now_s,front_timeout_s))road.status=Status::Missing;
   bool collision=false,predicted=false;
   for(const auto &ob:p.obstacles) {
     if(ob.class_id!=(kind==0?1:kind==1?10:11))continue;
     if(ob.predicted){predicted=true;continue;}
-    const bool corridor=ob.box.right>p.width*.35f&&ob.box.left<p.width*.65f;
-    if(!corridor||ob.box.bottom<=ob.box.top)continue;
+    const bool corridor=CollisionGeometry::ground_in_path(ob.box,p.width,p.height,road);
+    const bool near=CollisionGeometry::ground_in_near(ob.box,p.width,p.height,road);
+    if(near)collision=true;
+    if(!corridor)continue;
     if(ob.distance_m>=0&&(risk.nearest<0||ob.distance_m<risk.nearest))risk.nearest=ob.distance_m;
-    if(ob.box.bottom>p.height*.85f)collision=true;
     if(kind==2&&ob.distance_m>=0&&ob.distance_m<3)collision=true;
     if(ob.track_id<0||p.stamp.static_image)continue;
     auto &h=history_[{ob.class_id,ob.track_id}];
@@ -235,11 +240,16 @@ bool AdasEngine::ingest(const ObjectObservation &sample,double now_s) {
   if(v!=0)return true;
   if(traffic&&current&&p.traffic_status==Status::Valid) {
     bool person_danger=!separate_crosswalk_source&&p.person_on_zebra,immediate=false,predicted=false;
+    auto road=lane_;
+    if(!fresh(road.stamp,now_s,front_timeout_s))road.status=Status::Missing;
     for(const auto &ob:p.obstacles) {
       if(ob.class_id!=1||p.width<=0||p.height<=0)continue;
       if(ob.predicted){predicted=true;continue;}
-      const bool corridor=ob.box.right>p.width*.35f&&ob.box.left<p.width*.65f;
-      if(corridor&&(ob.box.bottom>p.height*.75f||(ob.distance_m>=0&&ob.distance_m<3))) {
+      const bool in_path=CollisionGeometry::ground_in_path(ob.box,p.width,p.height,road);
+      // Pedestrians retain the earlier braking depth independently of the vehicle near box.
+      const bool near=ob.box.bottom>p.height*.75f;
+      const bool metric_close=ob.distance_m>=0&&ob.distance_m<3;
+      if(in_path&&(near||metric_close)) {
         person_danger=true;immediate=immediate||ob.confidence>=.65f;
       }
     }
@@ -261,7 +271,7 @@ bool AdasEngine::ingest(const ObjectObservation &sample,double now_s) {
   const bool accepted[]={traffic,vehicle,roadblock};
   const Status statuses[]={p.traffic_status,p.vehicle_status,p.roadblock_status};
   for(int kind=0;kind<3;++kind)if(accepted[kind]) {
-    if(current&&statuses[kind]==Status::Valid)update_risk(p,components[kind]);
+    if(current&&statuses[kind]==Status::Valid)update_risk(p,components[kind],now_s);
     else risks_[kind].clear_count=0;
   }
   for(auto it=history_.begin();it!=history_.end();) {
@@ -278,7 +288,7 @@ AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
   const bool navigation_ok=navigation_.status==Status::Valid&&fresh(navigation_.stamp,now,front_timeout_s);
   int lane=std::clamp(static_cast<int>(ego.lane),0,2);
   const bool signal_current=signal_status_==Status::Valid&&fresh(signal_stamp_,now,front_timeout_s);
-  d.light=lights_[lane];
+  d.light=signal_current?lights_[lane]:LightState::Unknown;
   if(d.light==LightState::Green&&(!signal_current||!green_ready_[lane]))d.light=LightState::Unknown;
   if(ego.speed_source==SpeedSource::Simulation) {
     d.speed_valid=std::isfinite(ego.manual_speed_kmh)&&ego.manual_speed_kmh>=0;

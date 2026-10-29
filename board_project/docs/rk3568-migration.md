@@ -10,8 +10,10 @@ cd FPGARACE_2026_Pango_3/board_project
 ./build.sh --check
 ./build.sh --install-deps       # 只在Ubuntu/Debian缺依赖时显式使用
 ./build.sh
-./build_adas/run_img_recv_demo.sh
+./run_adas.sh                  # 也可 sh ./run_adas.sh
 ```
+
+根入口与构建launcher统一按自身位置定位资源和运行库，支持从其他工作目录以及带空格目录调用。缺二进制、模型目录或运行库时输出明确诊断，不自动编译或改桌面显示授权。请在目标板原桌面用户会话启动；没有有效X11/Wayland授权的SSH会话不能用改DISPLAY猜测解决，离屏验证仅用于测试。
 
 默认2个编译任务，可设置`BUILD_JOBS`。`--check`核对平台、工具链、运行库和必需资产，不创建输出或要求PCIe设备在线。驱动包含在`drivers/pango_pci_driver_mul.ko`，但不会被构建脚本加载。
 
