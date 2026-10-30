@@ -147,6 +147,8 @@ struct AdasDecision {
   bool alarm_red_run = false, alarm_illegal_lane_change = false;
   bool alarm_overspeed = false, alarm_collision = false;
   bool alarm_lane_departure = false, lane_change_allowed = false;
+  // Presentation advice only; conservative stop/turn authorization is unchanged.
+  bool slowdown_warning = false;
   bool speed_valid = false;
   SpeedSource speed_source = SpeedSource::Unavailable;
   float speed_kmh = 0, nearest_obstacle_m = -1, ttc_s = -1;

@@ -652,7 +652,7 @@ int main() {
     approaching.obstacles.push_back({10,42,{280,250-h,360,250},.9f,-1});
     e.ingest(approaching);
   }
-  assert(e.evaluate(ego,.7).alarm_collision);
+  assert(!e.evaluate(ego,.7).alarm_collision); // Vehicle warnings retain the board's 1.2s cap.
   assert(e.evaluate(ego,.7).ttc_s>1.8f && e.evaluate(ego,.7).ttc_s<2.f);
   e.reset(1);ego.signal=TurnSignal::Left;
   for(int i=1;i<=3;++i){e.ingest(objects(i));e.ingest(geometry(i));}

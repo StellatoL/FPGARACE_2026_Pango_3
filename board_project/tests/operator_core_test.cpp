@@ -102,7 +102,7 @@ void substantial_near_footprint_still_counts() {
     // but a substantial part of the bottom contact footprint occupies it.
     auto p=front(1,.1);p.obstacles={{kind,42,{100,120,350,350},.9f,-1}};
     assert(engine.ingest(p,.1));const auto d=engine.evaluate(ego,.1);
-    assert(d.alarm_collision);
+    assert(d.alarm_collision==(kind!=10)); // Vehicle near risk uses the center gate.
     if(kind==1)assert(d.brake_now);
   }
 }
@@ -114,7 +114,8 @@ void wide_targets_occupying_the_path_are_not_missed() {
       AdasEngine engine;EgoState ego;
       auto p=front(1,.1);p.obstacles={{kind,42,box,.9f,-1}};
       assert(engine.ingest(p,.1));const auto d=engine.evaluate(ego,.1);
-      assert(d.alarm_collision&&!d.auto_driving);
+      assert(d.alarm_collision==(kind!=10));
+      if(kind!=10)assert(!d.auto_driving);
     }
   }
   // A wide box with only a shallow edge inside the path must still be rejected.
@@ -138,7 +139,14 @@ void near_center_and_independent_far_risks_are_preserved() {
     p.obstacles={{10,42,{280,250-h,360,250},.9f,-1}};
     assert(engine.ingest(p,p.stamp.receive_s));
   }
-  d=engine.evaluate(ego,.7);assert(d.alarm_collision&&d.ttc_s>1.8f&&d.ttc_s<2);
+  d=engine.evaluate(ego,.7);assert(!d.alarm_collision&&d.ttc_s>1.8f&&d.ttc_s<2);
+  // The existing 1.2s vehicle cap still warns for a faster approach.
+  engine.reset(1);
+  for(int i=0;i<3;++i) {
+    p=front(i+1,.1+i*.3);const float h=2500.f/(25-5*i);
+    p.obstacles={{10,42,{280,250-h,360,250},.9f,-1}};assert(engine.ingest(p));
+  }
+  d=engine.evaluate(ego,.7);assert(d.alarm_collision&&d.ttc_s>.8f&&d.ttc_s<1.2f);
 }
 void distant_highway_target_is_not_near_without_ttc_or_distance() {
   AdasEngine engine;EgoState ego;
@@ -150,7 +158,7 @@ void distant_highway_target_is_not_near_without_ttc_or_distance() {
 }
 void short_geometry_adapts_only_to_usable_fresh_lane() {
   const auto fallback=CollisionGeometry::near_polygon();
-  assert(fallback[0].x==.35f&&fallback[0].y==1&&fallback[1].x==.42f&&fallback[1].y==.85f);
+  assert(fallback[0].x==.35f&&fallback[0].y==1&&fallback[1].x==.42f&&fallback[1].y==.80f);
   assert(fallback[2].x==.58f&&fallback[3].x==.65f);
   assert(!CollisionGeometry::ground_in_near({280,150,360,250},640,360));
   assert(CollisionGeometry::ground_in_path({280,150,360,250},640,360));
@@ -168,9 +176,9 @@ void short_geometry_adapts_only_to_usable_fresh_lane() {
   assert(fitted[3].x-fitted[0].x<=.300001f);
   AdasEngine engine;EgoState ego;assert(engine.ingest(road));
   auto p=front(1,.1);p.obstacles={{10,42,{280,150,360,350},.9f,-1}};
-  assert(engine.ingest(p));assert(!engine.evaluate(ego,.1).alarm_collision);
+  assert(engine.ingest(p));assert(engine.evaluate(ego,.1).alarm_collision); // Fixed vehicle near box is independent of lane fit.
   p.stamp={1,2,.7,.7,false};assert(engine.ingest(p));
-  assert(engine.evaluate(ego,.7).alarm_collision); // Expired shifted lane cannot hide center danger.
+  assert(engine.evaluate(ego,.7).alarm_collision); // Expired lane also cannot hide center danger.
 }
 }
 int main(int argc,char **argv) {

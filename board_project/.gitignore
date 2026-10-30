@@ -61,4 +61,5 @@ desktop.ini
 /models/adas-dual640-*/
 /models/adas/activation.json
 /models/yolov5n-coco-640-2026-10-27/yolov5n.rknn
+/video_example/
 /check*_optimize.onnx

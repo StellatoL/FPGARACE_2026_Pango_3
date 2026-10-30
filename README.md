@@ -1,7 +1,7 @@
-> **2026-10-29 当前板端工程入口：[`board_project/`](board_project/README.md)。**
-> 640×640 双模型交替推理，保留传统车道、短时跟踪、键盘导航和四路侧向安全判断。此版修复一键启动，将驾驶状态及全部警报移到视频内，改用 FPGA 输入 FPS，并修正灯色消失及碰撞近区判定；原深色配色、FPGA 通信和原控制按钮保持不变。驱动完整包含在 [`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后进入 `board_project/` 执行 `./build.sh`，再执行 `./run_adas.sh`。
-> 四段单路视频352个采样、704次推理无失败或候选溢出，另验证6个真实图片场景；39项 Qt 回归通过。30fps 内存喂帧实测每模型6.83～7.08Hz、传统车道11.25～14.08Hz，尚未达到8Hz/15Hz预算；真实 FPGA 实流及显示总延迟仍待验收。详见[本轮验证与性能](board_project/docs/operator-hdmi-verification-2026-10-29.md)、[模型接入](board_project/docs/model-replacement-roadmap.md)、[迁移说明](board_project/docs/rk3568-migration.md)和[工程清理](board_project/docs/project-cleanup-2026-10-28.md)。构建目录、测试素材和临时日志不纳入发布。
-> 原有 `arm/`、`fpga/` 工程及下述历史说明原样保留，与 `board_project/FPGA` 不混用。
+> **2026-10-30 当前板端工程入口：[`board_project/`](board_project/README.md)。**
+> 640×640双模型交替推理，保留传统车道、短时跟踪、键盘导航和四路侧向安全判断。本版在已选车道边界附近补充阴影、淡漆的原图证据复核，普通前方风险显示“减速 · 保持车道”，并下移底部行为图标；保留板卡原有的检测与显示调整，车道长度、预警比例及安全阈值以本轮开始时状态为准。FPGA通信及原控制按钮逻辑未改，驱动完整包含在[`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后进入`board_project/`执行`./build.sh`，再执行`./run_adas.sh`。
+> 六段单路HDMI视频440个采样、每版880次真实推理无运行失败或候选溢出；补回24次原为未知的实线判断，原有已知类型与拟合坐标不变，Qt回归42项通过。补充原图复核有计算代价：独立车道平均79→106ms，P95为108→196ms，不能宣称达到15Hz；真实FPGA实流及显示总延迟仍待验收。详见[车道与显示验证](board_project/docs/lane-display-verification-2026-10-30.md)、[模型接入](board_project/docs/model-replacement-roadmap.md)、[迁移说明](board_project/docs/rk3568-migration.md)和[工程清理](board_project/docs/project-cleanup-2026-10-28.md)。测试源码保留，测试视频、截图、日志和ARM编译产物不纳入发布。
+> 原有`arm/`、`fpga/`工程及下述历史说明原样保留，与`board_project/FPGA`不混用。
 
 # RK3568_50H 四路环视与 ARM ADAS 工程
 

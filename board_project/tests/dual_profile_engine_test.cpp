@@ -153,19 +153,20 @@ void static_source_is_ingested_once_and_manual_rules_still_apply() {
   const auto d = engine.evaluate(ego, 120);
   assert(d.alarm_illegal_lane_change && !d.lane_change_allowed);
 }
-void crosswalk_votes_do_not_come_from_primary_or_evaluation() {
+void crosswalk_brakes_immediately_and_primary_cannot_clear() {
   AdasEngine engine; dual(engine); EgoState ego;
   assert(engine.ingest(crossing(1, .1, true)));
+  assert(engine.evaluate(ego, .1).brake_now); // The first measured crossing is urgent.
   for (int i = 1; i <= 6; ++i) {
     auto p = primary(i, .1 + i * .01);
     p.person_on_zebra = true; // This field has no authority in the primary source.
     assert(engine.ingest(p));
-    assert(!engine.evaluate(ego, p.stamp.receive_s).brake_now);
+    assert(engine.evaluate(ego, p.stamp.receive_s).brake_now);
   }
   assert(engine.ingest(crossing(2, .2, true)));
   for (int i = 0; i < 20; ++i) {
     assert(!engine.ingest(crossing(2, .2, true)));
-    assert(!engine.evaluate(ego, .2).brake_now);
+    assert(engine.evaluate(ego, .2).brake_now);
   }
   assert(engine.ingest(crossing(3, .3, true)));
   assert(engine.evaluate(ego, .3).brake_now);
@@ -220,7 +221,7 @@ void failed_stale_and_duplicate_crossing_cannot_release_danger() {
   assert(engine.ingest(crossing(11, 1.03, false)));
   assert(!engine.evaluate(ego, 1.03).brake_now);
 }
-void crosswalk_confirmation_restarts_after_an_outage() {
+void crosswalk_danger_remains_immediate_after_an_outage() {
   for (Status interrupt : {Status::Missing, Status::Failed, Status::Valid}) {
     AdasEngine engine; dual(engine); EgoState ego;
     assert(engine.ingest(crossing(1, .1, true)));
@@ -230,7 +231,7 @@ void crosswalk_confirmation_restarts_after_an_outage() {
     const double time = interrupt == Status::Valid ? 1.1 : .4;
     for (int i = 0; i < 3; ++i) {
       assert(engine.ingest(crossing(4 + i, time + i * .1, true)));
-      assert(engine.evaluate(ego, time + i * .1).brake_now == (i == 2));
+      assert(engine.evaluate(ego, time + i * .1).brake_now);
     }
   }
 }
@@ -274,9 +275,9 @@ void reset_preserves_profile_and_clears_all_crosswalk_history() {
   assert(engine.evaluate(ego, .2).stop_required);
   auto p = crossing(1, .3, true); assert(!engine.ingest(p));
   p.stamp.generation = 2; assert(engine.ingest(p));
-  assert(!engine.evaluate(ego, .3).brake_now);
+  assert(engine.evaluate(ego, .3).brake_now);
   auto source = primary(1, .3); source.stamp.generation = 2;
-  assert(engine.ingest(source)); assert(!engine.evaluate(ego, .3).stop_required);
+  assert(engine.ingest(source)); assert(engine.evaluate(ego, .3).stop_required);
   engine.reset(1); assert(engine.generation() == 2);
   // Automatic source transitions preserve the explicitly selected profile too.
   source.stamp.generation = 3; assert(engine.ingest(source));
@@ -291,10 +292,10 @@ int main(int argc, char **argv) {
     {"independent primary freshness", each_primary_component_must_be_valid_and_fresh},
     {"post-request side capability", mosaic_requires_both_requested_side_components},
     {"static and manual rules", static_source_is_ingested_once_and_manual_rules_still_apply},
-    {"crosswalk-only confirmation and clear", crosswalk_votes_do_not_come_from_primary_or_evaluation},
+    {"immediate crossing and independent clear", crosswalk_brakes_immediately_and_primary_cannot_clear},
     {"independent primary person brake", primary_person_brakes_and_has_an_independent_clear_latch},
     {"crosswalk invalid, stale, duplicate rejection", failed_stale_and_duplicate_crossing_cannot_release_danger},
-    {"crosswalk outage confirmation", crosswalk_confirmation_restarts_after_an_outage},
+    {"immediate crossing after outage", crosswalk_danger_remains_immediate_after_an_outage},
     {"view and source isolation", nonfront_crosswalk_or_signal_cannot_brake_front_or_replace_people},
     {"profile-preserving reset", reset_preserves_profile_and_clears_all_crosswalk_history},
   };

@@ -148,7 +148,8 @@ void AdasEngine::update_risk(const ObjectObservation &p,unsigned component,doubl
     if(ob.class_id!=(kind==0?1:kind==1?10:11))continue;
     if(ob.predicted){predicted=true;continue;}
     const bool corridor=CollisionGeometry::ground_in_path(ob.box,p.width,p.height,road);
-    const bool near=CollisionGeometry::ground_in_near(ob.box,p.width,p.height,road);
+    const bool near=kind==1?CollisionGeometry::vehicle_ground_in_near(ob.box,p.width,p.height):
+      CollisionGeometry::ground_in_near(ob.box,p.width,p.height,road);
     if(near)collision=true;
     if(!corridor)continue;
     if(ob.distance_m>=0&&(risk.nearest<0||ob.distance_m<risk.nearest))risk.nearest=ob.distance_m;
@@ -167,7 +168,7 @@ void AdasEngine::update_risk(const ObjectObservation &p,unsigned component,doubl
       else if(b.h-a.h>1)ttc=a.h*static_cast<float>(dt)/(b.h-a.h);
     }
     if(ttc>0&&(risk.ttc<0||ttc<risk.ttc))risk.ttc=ttc;
-    if(ttc>0&&ttc<ttc_threshold_s)collision=true;
+    if(ttc>0&&ttc<(kind==1?std::min(ttc_threshold_s,1.2f):ttc_threshold_s))collision=true;
   }
   if(collision){risk.latched=true;risk.clear_count=0;}
   else if(predicted)risk.clear_count=0;
@@ -239,7 +240,8 @@ bool AdasEngine::ingest(const ObjectObservation &sample,double now_s) {
   }
   if(v!=0)return true;
   if(traffic&&current&&p.traffic_status==Status::Valid) {
-    bool person_danger=!separate_crosswalk_source&&p.person_on_zebra,immediate=false,predicted=false;
+    bool person_danger=!separate_crosswalk_source&&p.person_on_zebra;
+    bool immediate=person_danger,predicted=false;
     auto road=lane_;
     if(!fresh(road.stamp,now_s,front_timeout_s))road.status=Status::Missing;
     for(const auto &ob:p.obstacles) {
@@ -261,8 +263,8 @@ bool AdasEngine::ingest(const ObjectObservation &sample,double now_s) {
   }
   if(crosswalk&&separate_crosswalk_source&&current&&p.crosswalk_status==Status::Valid) {
     const bool danger=p.person_on_zebra;
-    const bool confirmed=crosswalk_danger_confirm_.update(danger,p.stamp.static_image)&&danger;
-    if(confirmed){crosswalk_emergency_=true;crosswalk_clear_count_=0;}
+    crosswalk_danger_confirm_.update(danger,p.stamp.static_image);
+    if(danger){crosswalk_emergency_=true;crosswalk_clear_count_=0;}
     else if(!danger) {
       if(++crosswalk_clear_count_>=3||p.stamp.static_image)crosswalk_emergency_=false;
     } else crosswalk_clear_count_=0;
@@ -334,7 +336,8 @@ AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
     const bool left=command==TurnSignal::Left;
     const auto raw=left?lane_.lane.left_type:lane_.lane.right_type;
     const bool boundary_valid=left?lane_.lane.left_valid:lane_.lane.right_valid;
-    const bool solid=geometry_ok&&boundary_valid&&raw==LineType::Solid&&(left?left_solid:right_solid);
+    const bool observed_solid=geometry_ok&&boundary_valid&&raw==LineType::Solid;
+    const bool solid=observed_solid&&(left?left_solid:right_solid);
     const bool dashed=geometry_ok&&boundary_valid&&raw==LineType::Dashed&&(left?left_dashed:right_dashed);
     const int side_index=left?3:1;
     const auto &side=objects_[side_index];
@@ -346,7 +349,7 @@ AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
     const bool target_blocked=LocalPlanner::target_path_blocked(lane_,front_obstacles,
       left?Direction::Left:Direction::Right);
     const bool lateral_clear=!target_blocked&&(single_input||(side_ok&&!blocked));
-    d.alarm_illegal_lane_change=solid&&ego.force_lane_change!=TurnSignal::None;
+    d.alarm_illegal_lane_change=observed_solid&&ego.force_lane_change!=TurnSignal::None;
     d.lane_change_allowed=front_ok&&dashed&&lateral_clear&&!boundary&&!d.stop_required;
     d.arrow=d.lane_change_allowed?(left?Direction::Left:Direction::Right):Direction::Straight;
     d.hint_text=!front_ok?u8"前视感知不可用":d.stop_required?u8"停车状态：保持车道":
@@ -365,15 +368,20 @@ AdasDecision AdasEngine::evaluate(const EgoState &ego,double now) const {
     d.lane_change_allowed=false;d.arrow=Direction::Straight;d.hint_text=d.local_plan.reason;
     if(!d.local_plan.valid)d.local_plan=LocalPlanner::plan(planning_lane,front_obstacles,d.arrow,false,d.stop_required);
   }
+  bool path_warning=false;
   if(d.local_plan.valid&&d.local_plan.maneuver==Maneuver::Stop&&!d.stop_required) {
     d.stop_required=true;d.auto_driving=false;d.lane_change_allowed=false;d.hint_text=d.local_plan.reason;
+    path_warning=true;
   }
+  d.slowdown_warning=front_ok&&!ego.manual_stop&&!ego.paused&&!signal_stop&&!d.brake_now&&
+    (d.alarm_collision||path_warning);
   if(!d.auto_driving&&d.stop_required)d.arrow=Direction::None;
   d.led_mask=d.arrow==Direction::Left?1:d.arrow==Direction::Right?4:d.arrow==Direction::Straight?2:0;
   if(d.brake_now)d.status_text+=u8"紧急刹车 ";
   if(d.alarm_red_run)d.status_text+=u8"红灯强行通过 ";
   if(d.alarm_illegal_lane_change)d.status_text+=u8"实线变道报警 ";
-  if(d.alarm_collision)d.status_text+=u8"碰撞风险 ";
+  if(d.alarm_collision)d.status_text+=d.slowdown_warning?u8"碰撞风险：请减速 ":u8"碰撞风险 ";
+  else if(d.slowdown_warning)d.status_text+=u8"前方路径风险：请减速 ";
   if(d.alarm_lane_departure)d.status_text+=u8"压实线 ";
   if(d.alarm_overspeed)d.status_text+=u8"超速 ";
   if(!front_ok)d.status_text+=u8"前视感知不可用：停车等待";

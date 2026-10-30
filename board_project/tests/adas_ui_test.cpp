@@ -110,6 +110,45 @@ class AdasUiTest : public QObject {
     return red>image.width()*image.height()/50;
   }
 private slots:
+  void ordinary_path_risk_requests_slowdown_without_stop_label() {
+    MainWindow window;window.show();window.set_single_view(true);auto *c=control(window);QVERIFY(c);c->timer_.stop();seed(c);
+    auto p=scene(c,4);const auto w=p.observation.width,h=p.observation.height;
+    p.observation.obstacles={{10,42,{w*.45f,h*.45f,w*.55f,h*.70f},.9f,-1}};
+    send(c,p);video(c);c->render(adas::monotonic_seconds());
+    QVERIFY(c->decision_.stop_required);QVERIFY(!c->decision_.lane_change_allowed);
+    const auto hud=report(c)["hud"].toObject();
+    QCOMPARE(hud["motion"].toString(),QStringLiteral("减速"));
+    QCOMPARE(hud["behavior"].toString(),QStringLiteral("减速 · 保持车道"));
+    const auto evidence=qEnvironmentVariable("ADAS_TEST_EVIDENCE_DIR");if(!evidence.isEmpty()){QDir().mkpath(evidence);c->screenshot(evidence+"/ui-slowdown.png");window.grab().save(evidence+"/window-slowdown.png");}
+    QVERIFY(window.close());
+  }
+  void stopping_causes_take_priority_over_ordinary_risk() {
+    MainWindow window;auto *c=control(window);QVERIFY(c);c->timer_.stop();seed(c);
+    auto p=scene(c,4);const auto w=p.observation.width,h=p.observation.height;
+    p.observation.obstacles={{10,42,{w*.45f,h*.4f,w*.55f,h*.95f},.9f,-1}};
+    send(c,p);QVERIFY(c->decision_.alarm_collision);
+    c->intersection_check_->setChecked(true);c->tick();
+    QCOMPARE(report(c)["hud"].toObject()["motion"].toString(),QStringLiteral("停车"));
+    c->intersection_check_->setChecked(false);c->manual_stop_check_->setChecked(true);c->tick();
+    QCOMPARE(report(c)["hud"].toObject()["motion"].toString(),QStringLiteral("停车"));
+    c->manual_stop_check_->setChecked(false);p=scene(c,5);p.stamp.static_image=true;p.observation.stamp=p.stamp;
+    p.observation.light=adas::LightState::Red;send(c,p);
+    QCOMPARE(report(c)["hud"].toObject()["motion"].toString(),QStringLiteral("停车"));
+    p=scene(c,6);p.observation.obstacles={{1,43,{w*.45f,h*.5f,w*.55f,h*.9f},.9f,-1}};
+    send(c,p);QVERIFY(c->decision_.brake_now);
+    QCOMPARE(report(c)["hud"].toObject()["motion"].toString(),QStringLiteral("紧急刹车"));
+    QVERIFY(window.close());
+  }
+  void behavior_icon_is_lower_without_covering_footer() {
+    MainWindow window;window.show();window.set_single_view(true);auto *c=control(window);QVERIFY(c);c->timer_.stop();video(c);
+    c->decision_={};c->decision_.stop_required=true;c->decision_.arrow=adas::Direction::None;
+    c->render(adas::monotonic_seconds());const auto image=c->rendered_.toImage();
+    const auto low=image.pixelColor(640+65,int(720*.86));
+    QVERIFY2(low.red()>120&&low.red()>low.blue()+70,"Move the warning icon down to .86 front height");
+    const auto old=image.pixelColor(640+65,int(720*.76));QVERIFY(old.red()<120||old.red()<old.blue()+70);
+    QVERIFY(report(c)["hud"].toObject()["icon_center_y"].toDouble()>=.85);
+    QVERIFY(window.close());
+  }
   void no_separate_adas_status_group_or_labels() {
     MainWindow window;auto *c=control(window);QVERIFY(c);c->timer_.stop();
     for(auto *box:window.findChildren<QGroupBox*>())QVERIFY(box->title()!=QStringLiteral("ADAS 状态"));
@@ -178,9 +217,9 @@ private slots:
     const auto original=c->displayed_.pixels->bytes;c->decision_={};c->render(adas::monotonic_seconds());
     QCOMPARE(c->displayed_.pixels->bytes,original);
     const auto image=c->rendered_.toImage();
-    const QColor outside=image.pixelColor(int(1280*.43),int(720*.80));
-    const QColor inside=image.pixelColor(int(1280*.43),int(720*.88));
-    QVERIFY2(inside.blue()>outside.blue(),"The displayed near zone must begin at .85 of front height");
+    const QColor outside=image.pixelColor(int(1280*.43),int(720*.75));
+    const QColor inside=image.pixelColor(int(1280*.43),int(720*.83));
+    QVERIFY2(inside.blue()>outside.blue(),"The displayed near zone must begin at the existing .80 of front height");
     QVERIFY(window.close());
   }
   void verified_schema3_manifest_selects_profile_and_hash_failure_denies_it() {
@@ -230,12 +269,12 @@ private slots:
     QCOMPARE(c->views_[0].stamp.sequence,uint64_t(100));
     QVERIFY(window.close());
   }
-  void crosswalk_ui_votes_are_source_specific_and_deduplicated() {
+  void crosswalk_ui_immediate_brake_and_source_specific_clear() {
     MainWindow window;auto *c=control(window);QVERIFY(c);c->timer_.stop();dual(c);
     send(c,primary(c,1));send(c,crossing(c,1,true));
     auto second=crossing(c,2,true);send(c,second);
     for(int i=0;i<10;++i){send(c,second);c->tick();}
-    QVERIFY(!c->decision_.brake_now);
+    QVERIFY(c->decision_.brake_now);
     send(c,crossing(c,3,true));QVERIFY(c->decision_.brake_now);
     for(uint64_t sequence=2;sequence<=6;++sequence)send(c,primary(c,sequence));
     QVERIFY(c->decision_.brake_now);
@@ -357,7 +396,7 @@ private slots:
     QVERIFY(!c->views_[0].stamp.sequence&&!c->crosswalk_views_[0].stamp.sequence&&!c->last_geometry_.stamp.sequence);
     QVERIFY(c->decision_.stop_required&&!c->decision_.lane_change_allowed);
     send(c,primary(c,1));send(c,crossing(c,1,true));send(c,crossing(c,2,true));
-    QVERIFY(!c->decision_.brake_now);send(c,crossing(c,3,true));QVERIFY(c->decision_.brake_now);
+    QVERIFY(c->decision_.brake_now);send(c,crossing(c,3,true));QVERIFY(c->decision_.brake_now);
     QVERIFY(window.close());
   }
   void keyboard_and_simulation_speed_controls() {
@@ -625,6 +664,6 @@ private slots:
 };
 int main(int argc,char **argv) {
   qputenv("ADAS_MODEL_MANIFEST","/nonexistent/adas-ui-test-manifest.json");
-  QApplication app(argc,argv);AdasUiTest test;return QTest::qExec(&test,argc,argv);
+  QApplication app(argc,argv);QFile theme("resources/style.qss");if(theme.open(QFile::ReadOnly))app.setStyleSheet(QString::fromUtf8(theme.readAll()));AdasUiTest test;return QTest::qExec(&test,argc,argv);
 }
 #include "adas_ui_test.moc"

@@ -14,7 +14,7 @@ if [[ "${ADAS_TEST_GUI_ONLY:-0}" != 1 ]]; then
 g++ "${ADAS_CXX_FLAGS[@]}" tests/frame_pipeline_test.cpp "${ADAS_QT_FLAGS[@]}" -o "$ADAS_TEST_BUILD/frame_test"
 "$ADAS_TEST_BUILD/frame_test"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/adas_engine_test.cpp src/core/adas_engine.cpp -o "$ADAS_TEST_BUILD/engine_test"
-for case in manual_controls tracking_decision dual_profile_engine operator_core; do
+for case in manual_controls tracking_decision dual_profile_engine operator_core slowdown_decision; do
   g++ "${ADAS_CXX_FLAGS[@]}" "tests/${case}_test.cpp" src/core/adas_engine.cpp -o "$ADAS_TEST_BUILD/${case}_test"
   "$ADAS_TEST_BUILD/${case}_test"
 done
@@ -23,6 +23,8 @@ g++ "${ADAS_CXX_FLAGS[@]}" tests/view_tracker_test.cpp -o "$ADAS_TEST_BUILD/view
 "$ADAS_TEST_BUILD/engine_test"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/road_geometry_test.cpp src/core/road_geometry.cpp src/core/ground_calibration.cpp "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/geometry_test"
 "$ADAS_TEST_BUILD/geometry_test"
+g++ "${ADAS_CXX_FLAGS[@]}" tests/lane_paint_recovery_test.cpp src/core/road_geometry.cpp "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/lane_paint_recovery_test"
+"$ADAS_TEST_BUILD/lane_paint_recovery_test"
 /usr/lib/qt5/bin/moc -Isrc src/inference/adas_pipeline.h -o "$ADAS_TEST_BUILD/moc_adas_pipeline.cpp"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/neural_pipeline_test.cpp src/inference/adas_pipeline.cpp src/core/road_geometry.cpp src/core/ground_calibration.cpp "$ADAS_TEST_BUILD/moc_adas_pipeline.cpp" "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/pipeline_test"
 g++ "${ADAS_CXX_FLAGS[@]}" tests/geometry_worker_test.cpp src/inference/adas_pipeline.cpp src/core/road_geometry.cpp src/core/ground_calibration.cpp "$ADAS_TEST_BUILD/moc_adas_pipeline.cpp" "${ADAS_QT_FLAGS[@]}" "${ADAS_CV_FLAGS[@]}" -o "$ADAS_TEST_BUILD/geometry_worker_test"

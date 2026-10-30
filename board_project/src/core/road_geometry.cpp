@@ -22,7 +22,8 @@ bool narrow_component(const cv::Mat &stats,int label,int width) {
   return label && double(stats.at<int>(label,cv::CC_STAT_AREA))/
          stats.at<int>(label,cv::CC_STAT_HEIGHT)<width*.06;
 }
-Markings markings(const cv::Mat &bgr,int native_width = 0) {
+Markings markings(const cv::Mat &bgr,int native_width = 0,bool recover_local_paint = false,
+                  bool continue_solid_paint = false) {
   Markings result;
   result.reference_width=native_width?native_width:bgr.cols;
   cv::Mat hsv,gray,white,yellow,raw,contrast,strong,weak,identity,centroids;
@@ -38,7 +39,15 @@ Markings markings(const cv::Mat &bgr,int native_width = 0) {
                   cv::getStructuringElement(cv::MORPH_RECT,{kernel,1}));
   cv::threshold(contrast,strong,11,255,cv::THRESH_BINARY);
   cv::threshold(contrast,weak,3,255,cv::THRESH_BINARY);
+  if(recover_local_paint) {
+    // Only a bounded proof around an already selected boundary can recover
+    // shaded neutral paint. The original full-image mask and fit stay intact.
+    cv::Mat neutral,local;
+    cv::inRange(hsv,cv::Scalar(0,0,0),cv::Scalar(179,75,255),neutral);
+    cv::bitwise_and(continue_solid_paint?weak:strong,neutral,local);cv::bitwise_or(white,local,white);
+  }
   cv::bitwise_and(strong,white,strong);cv::bitwise_and(weak,white,weak);
+  if(continue_solid_paint)strong=weak.clone();
   cv::bitwise_or(strong,yellow,result.mask);
   cv::bitwise_or(white,yellow,raw);
   const int top=native_width?0:cvRound(bgr.rows*.42);
@@ -221,7 +230,8 @@ Boundary fit_boundary(const Markings &paint,const std::vector<cv::Vec4i> &segmen
   return best;
 }
 
-void corroborate_native_white(Boundary &boundary,const Markings &coarse,const cv::Mat &native) {
+void corroborate_native_white(Boundary &boundary,const Markings &coarse,const cv::Mat &native,
+                              bool recover_shade = false) {
   if (!boundary.valid || boundary.type!=LineType::Unknown || native.cols<=coarse.mask.cols) return;
   const int radius=std::max(2,coarse.mask.cols/240);
   const int sample_radius=cvCeil(radius*std::hypot(1.,boundary.slope));
@@ -257,7 +267,7 @@ void corroborate_native_white(Boundary &boundary,const Markings &coarse,const cv
   const int x1=int(std::clamp(std::ceil(std::max(xa,xb)+margin+1),0.,double(native.cols)));
   if (x1<=x0 || y1<=y0 || int64_t(x1-x0)*(y1-y0)>160000) return;
   const cv::Rect roi(x0,y0,x1-x0,y1-y0);
-  const auto paint=markings(native(roi),native.cols);
+  const auto paint=markings(native(roi),native.cols,recover_shade);
   if (paint.mask.empty()) return;
 
   // Establish complete rectangular identities before considering the narrow
@@ -355,6 +365,44 @@ void corroborate_native_white(Boundary &boundary,const Markings &coarse,const cv
   }
 }
 
+void corroborate_native_solid(Boundary &boundary,const Markings &coarse,const cv::Mat &native) {
+  if(!boundary.valid||boundary.type!=LineType::Unknown||native.cols<=coarse.mask.cols)return;
+  const double sx=double(native.cols)/coarse.mask.cols,sy=double(native.rows)/coarse.mask.rows;
+  const double slope=boundary.slope*sx/sy;
+  const double intercept=(boundary.intercept+.5)*sx-.5-slope*(sy*.5-.5);
+  const int radius=std::max(2,coarse.mask.cols/240);
+  const int search=cvCeil(radius*std::hypot(1.,boundary.slope)*sx);
+  const int top=cvRound(native.rows*.60),bottom=native.rows-1;
+  const int kernel=std::max(15,(native.cols/16)|1);
+  const double margin=search+kernel/2+2;
+  const double xa=slope*top+intercept,xb=slope*bottom+intercept;
+  const int x0=int(std::clamp(std::floor(std::min(xa,xb)-margin),0.,double(native.cols)));
+  const int x1=int(std::clamp(std::ceil(std::max(xa,xb)+margin+1),0.,double(native.cols)));
+  if(x1<=x0||int64_t(x1-x0)*(bottom-top+1)>160000)return;
+  const cv::Rect roi(x0,top,x1-x0,bottom-top+1);
+  for(bool continuation:{false,true}) {
+    // Try strong evidence first. Only a selected solid candidate may then
+    // follow the existing weak contrast; dashed proof remains strong-only.
+    const auto paint=markings(native(roi),native.cols,true,continuation);
+    if(paint.mask.empty())return;
+    std::vector<int> support(paint.identities,0);int on=0,visible=0;
+    for(int y=top;y<=bottom;++y) {
+      const int x=cvRound(slope*y+intercept);if(x<0||x>=native.cols)continue;
+      ++visible;const int hit=paint_at(paint,y-top,x-x0,search);
+      if(hit<0)continue;
+      const int id=paint.identity.at<int>(y-top,hit);
+      if(id){++support[id];++on;}
+    }
+    // Identical near-road interval and continuity criteria as the coarse solid
+    // proof. Separate dashes never pool into one continuous paint identity.
+    const int continuous=*std::max_element(support.begin(),support.end());
+    if(visible>=native.rows*.23&&double(continuous)/visible>=.78&&double(on)/visible>=.78) {
+      boundary.type=LineType::Solid;
+      boundary.confidence=float(std::min(1.,double(on)/visible*1.2));return;
+    }
+  }
+}
+
 LaneInfo lanes(const cv::Mat &bgr,const cv::Mat &native = {}) {
   LaneInfo lane;
   const auto paint=markings(bgr);
@@ -391,6 +439,10 @@ LaneInfo lanes(const cv::Mat &bgr,const cv::Mat &native = {}) {
   if (!native.empty()) {
     corroborate_native_white(l,paint,native);
     corroborate_native_white(r,paint,native);
+    corroborate_native_white(l,paint,native,true);
+    corroborate_native_white(r,paint,native,true);
+    corroborate_native_solid(l,paint,native);
+    corroborate_native_solid(r,paint,native);
   }
   lane.left_valid=l.valid; lane.right_valid=r.valid;
   lane.left_type=l.type; lane.right_type=r.type; lane.left_conf=l.confidence; lane.right_conf=r.confidence;

@@ -11,7 +11,20 @@ namespace adas {
 // Callers must mark stale lane observations Missing before passing them here.
 class CollisionGeometry {
 public:
-  static constexpr float near_top = .85f, near_bottom = 1.f;
+  static constexpr float near_top = .80f, near_bottom = 1.f;
+  static constexpr float vehicle_warning_top = .80f, vehicle_near_top = .85f;
+  // Fixed center-lane warning rectangle; the collision threshold is lower.
+  static std::array<PathPoint,4> vehicle_near_polygon() {
+    return {{{.40f,near_bottom},{.40f,vehicle_warning_top},
+             {.60f,vehicle_warning_top},{.60f,near_bottom}}};
+  }
+  static bool vehicle_ground_in_near(const Box &box,int width,int height) {
+    if(!valid_box(box,width,height))return false;
+    const float y=box.bottom/height;
+    if(y<vehicle_near_top)return false;
+    const float center=(box.left+box.right)*.5f/width;
+    return center>=.40f&&center<=.60f;
+  }
   // Normalized points ordered left-bottom, left-top, right-top, right-bottom.
   static std::array<PathPoint,4> near_polygon(const LaneObservation &road = {}) {
     auto top=path_edges(near_top,road),bottom=path_edges(near_bottom,road);

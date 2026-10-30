@@ -150,6 +150,7 @@ QJsonObject decisionJson(const AdasDecision &d) {
   QJsonArray points;for(unsigned i=0;i<d.local_plan.point_count&&i<d.local_plan.points.size();++i)
     points.append(QJsonArray{num(d.local_plan.points[i].x),num(d.local_plan.points[i].y)});
   return {{"stop_required",d.stop_required},{"brake_now",d.brake_now},{"auto_driving",d.auto_driving},
+    {"slowdown_warning",d.slowdown_warning},
     {"alarm_red_run",d.alarm_red_run},{"alarm_illegal_lane_change",d.alarm_illegal_lane_change},
     {"alarm_overspeed",d.alarm_overspeed},{"alarm_collision",d.alarm_collision},{"alarm_lane_departure",d.alarm_lane_departure},
     {"lane_change_allowed",d.lane_change_allowed},{"speed_valid",d.speed_valid},{"speed_kmh",num(d.speed_kmh)},

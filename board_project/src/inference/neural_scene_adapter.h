@@ -42,7 +42,7 @@ inline void adapt_neural_detections(const std::vector<NeuralDetection> &found,
     v.overlays.push_back(std::move(overlay));
   }
   if(role!=SceneModelRole::Vehicle)for(const auto &person:v.overlays)if(person.class_id==1||person.class_id==12)
-    for(const auto &z:v.overlays)if(z.label=="crosswalk"&&person.right>z.left&&person.left<z.right&&person.bottom>=z.top&&person.bottom<=z.bottom)o.person_on_zebra=true;
+    for(const auto &z:v.overlays)if(z.label=="crosswalk"&&person.right>z.left&&person.left<z.right&&person.bottom>z.top&&person.top<z.bottom)o.person_on_zebra=true;
 }
 }
 #endif

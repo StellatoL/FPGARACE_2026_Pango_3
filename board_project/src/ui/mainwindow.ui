@@ -146,7 +146,7 @@
           <item>
            <widget class="QCheckBox" name="chkPlateOverlay">
             <property name="text">
-             <string>车牌定位+画框</string>
+             <string>光线增强</string>
             </property>
            </widget>
           </item>
