@@ -1,0 +1,150 @@
+[Info] [2025-1-8 10:16:14] /***************************Start Configuration***************************/
+[Info] [2025-1-8 10:16:14] Path: D:/pds2022_sp6_4/PDS_2022.2-SP6.4/bin
+[Info] [2025-1-8 10:16:14] Version: 146967
+[Info] [2025-1-8 10:16:15] Current Path: D:/fpga_rk/ddr3_test/ddr3_test/ip_core/ddr3/pnr
+[Info] [2025-1-8 10:16:15] PDS Dir Path: D:/fpga_rk/ddr3_test/ddr3_test/ip_core/ddr3/pnr
+[Info] [2025-1-8 10:16:16] Configuration is not connect with server. connect first then scan chain.
+[Debug] [2025-1-8 10:16:16] Client Local host name:DESKTOP-50P54KS
+[Debug] [2025-1-8 10:16:16] Client Local Address:192.168.3.194
+[Debug] [2025-1-8 10:16:16] Server Address:127.0.0.1, Port:65420
+[Debug] [2025-1-8 10:16:16] Log::Print : Connecting to server[127.0.0.1 : 65420].
+[Info] [2025-1-8 10:16:16] Connect OK, Server: 127.0.0.1  Port: 65420
+[Debug] [2025-1-8 10:16:16] Finish.
+[Info] [2025-1-8 10:16:16] Connect server succeeded
+[Debug] [2025-1-8 10:16:16] Send RPC:1
+[Debug] [2025-1-8 10:16:16] Send cmd [check version information:40004] OK
+[Debug] [2025-1-8 10:16:16] Log::Print : Connect to server[127.0.0.1 : 65420] successfully.
+[Error] [2025-1-8 10:16:16] fail to exec check version information cmd...
+[Error] [2025-1-8 10:16:16] MsgOut: JtagServer-0616: Suite version mismatch. Server is 2022.2-SP6.1, client is 2022.2-SP6.4.
+[Error] [2025-1-8 10:16:16] MsgOut: JtagServer-0617: Svn version mismatch. Server is 138931, client is 146967.
+[Error] [2025-1-8 10:16:16] MsgOut: Configuration-0008: The command 'check version information' execute fail.
+[Info] [2025-1-8 10:16:18] /***************************End Configration***************************/
+[Info] [2025-1-8 10:16:19] /***************************Start Configuration***************************/
+[Info] [2025-1-8 10:16:19] Path: D:/pds2022_sp6_4/PDS_2022.2-SP6.4/bin
+[Info] [2025-1-8 10:16:19] Version: 146967
+[Info] [2025-1-8 10:16:20] Current Path: D:/fpga_rk/ddr3_test/ddr3_test/ip_core/ddr3/pnr
+[Info] [2025-1-8 10:16:20] PDS Dir Path: D:/fpga_rk/ddr3_test/ddr3_test/ip_core/ddr3/pnr
+[Info] [2025-1-8 10:16:21] Configuration is not connect with server. connect first then scan chain.
+[Debug] [2025-1-8 10:16:21] Client Local host name:DESKTOP-50P54KS
+[Debug] [2025-1-8 10:16:21] Client Local Address:192.168.3.194
+[Debug] [2025-1-8 10:16:21] Server Address:127.0.0.1, Port:65420
+[Debug] [2025-1-8 10:16:21] Log::Print : Connecting to server[127.0.0.1 : 65420].
+[Info] [2025-1-8 10:16:21] Connect OK, Server: 127.0.0.1  Port: 65420
+[Debug] [2025-1-8 10:16:21] Finish.
+[Info] [2025-1-8 10:16:21] Connect server succeeded
+[Debug] [2025-1-8 10:16:21] Send RPC:1
+[Debug] [2025-1-8 10:16:21] Send cmd [check version information:40004] OK
+[Debug] [2025-1-8 10:16:21] Log::Print : Connect to server[127.0.0.1 : 65420] successfully.
+[Error] [2025-1-8 10:16:21] fail to exec check version information cmd...
+[Error] [2025-1-8 10:16:21] MsgOut: JtagServer-0616: Suite version mismatch. Server is 2022.2-SP6.1, client is 2022.2-SP6.4.
+[Error] [2025-1-8 10:16:21] MsgOut: JtagServer-0617: Svn version mismatch. Server is 138931, client is 146967.
+[Error] [2025-1-8 10:16:21] MsgOut: Configuration-0008: The command 'check version information' execute fail.
+[Info] [2025-1-8 10:16:25] /***************************End Configration***************************/
+[Info] [2025-1-8 10:16:26] /***************************Start Configuration***************************/
+[Info] [2025-1-8 10:16:26] Path: D:/pds2022_sp6_4/PDS_2022.2-SP6.4/bin
+[Info] [2025-1-8 10:16:26] Version: 146967
+[Info] [2025-1-8 10:16:27] Current Path: D:/fpga_rk/ddr3_test/ddr3_test/ip_core/ddr3/pnr
+[Info] [2025-1-8 10:16:27] PDS Dir Path: D:/fpga_rk/ddr3_test/ddr3_test/ip_core/ddr3/pnr
+[Info] [2025-1-8 10:16:28] Configuration is not connect with server. connect first then scan chain.
+[Debug] [2025-1-8 10:16:28] Client Local host name:DESKTOP-50P54KS
+[Debug] [2025-1-8 10:16:28] Client Local Address:192.168.3.194
+[Debug] [2025-1-8 10:16:28] Server Address:127.0.0.1, Port:65420
+[Debug] [2025-1-8 10:16:28] Log::Print : Connecting to server[127.0.0.1 : 65420].
+[Info] [2025-1-8 10:16:28] Connect OK, Server: 127.0.0.1  Port: 65420
+[Debug] [2025-1-8 10:16:28] Finish.
+[Info] [2025-1-8 10:16:28] Connect server succeeded
+[Debug] [2025-1-8 10:16:28] Send RPC:1
+[Debug] [2025-1-8 10:16:28] Send cmd [check version information:40004] OK
+[Debug] [2025-1-8 10:16:28] Log::Print : Connect to server[127.0.0.1 : 65420] successfully.
+[Debug] [2025-1-8 10:16:30] Send RPC:2
+[Debug] [2025-1-8 10:16:30] Send cmd [get_cable_paras:40010] OK
+[Debug] [2025-1-8 10:16:30] Begin to send initialize chain cmd...
+[Debug] [2025-1-8 10:16:30] Send RPC:3
+[Debug] [2025-1-8 10:16:30] Send cmd [Open config cable:20001] OK
+[Debug] [2025-1-8 10:16:30] End to send initialize chain cmd.
+[Debug] [2025-1-8 10:16:30] COMMAND[check version information] execute successfully, takes 1.6 secs.
+[Debug] [2025-1-8 10:16:30] Log::Print : COMMAND[check version information] execute successfully, takes 1.6 secs.
+[Debug] [2025-1-8 10:16:32] COMMAND[get_cable_paras] execute successfully, takes 1.8 secs.
+[Debug] [2025-1-8 10:16:32] Log::Print : The cable List : 
+Cable index 0:USB Cable II/fffffffffffffffe 
+
+[Debug] [2025-1-8 10:16:32] Log::Print : COMMAND[get_cable_paras] execute successfully, takes 1.8 secs.
+[Debug] [2025-1-8 10:16:33] begin the exec of open cable cmd...
+[Debug] [2025-1-8 10:16:33] Begin to deal with chain from server...
+[Debug] [2025-1-8 10:16:33] Begin to set user chain...
+[Debug] [2025-1-8 10:16:33] End to set user chain.
+[Debug] [2025-1-8 10:16:33] Begin to update graphic item and tree item ...
+[Debug] [2025-1-8 10:16:33] End to update graphic item and tree item ...
+[Debug] [2025-1-8 10:16:33] Log::Print : PANGO USB CABLE II cable driver: D2XX DLL
+[Debug] [2025-1-8 10:16:33] Log::Print : PG2L50H
+[Debug] [2025-1-8 10:16:33] Log::Print : This device configure situation (done bit): 1
+[Info] [2025-1-8 10:16:34] set OpenLastPath: D:/fpga_rk/ddr3_test/ddr3_test/ip_core/ddr3/pnr/generate_bitstream/test_ddr.sbit
+[Debug] [2025-1-8 10:16:34] begin to get device info from CFG file...
+[Debug] [2025-1-8 10:16:34] end to get device info from CFG file...
+[Debug] [2025-1-8 10:16:34] Begin to update graphic item and tree item ...
+[Debug] [2025-1-8 10:16:34] End to update graphic item and tree item ...
+[Debug] [2025-1-8 10:16:34] Begin to update graphic item and tree item ...
+[Debug] [2025-1-8 10:16:34] End to update graphic item and tree item ...
+[Debug] [2025-1-8 10:16:34] End to deal wiht chain from server.
+[Debug] [2025-1-8 10:16:34] end the exec of open cable cmd.
+[Debug] [2025-1-8 10:16:34] COMMAND[Open config cable] execute successfully, takes 3.7 secs.
+[Debug] [2025-1-8 10:16:34] Log::Print : COMMAND[Open config cable] execute successfully, takes 3.7 secs.
+[Debug] [2025-1-8 10:16:34] Begin to send programming cmd...
+[Debug] [2025-1-8 10:16:34] Send RPC:4
+[Debug] [2025-1-8 10:16:34] Begin to send program data.
+[Debug] [2025-1-8 10:16:34] End to send program data.
+[Debug] [2025-1-8 10:16:34] Send cmd [Program:20002] OK
+[Debug] [2025-1-8 10:16:35] The value of Progress is 6
+[Debug] [2025-1-8 10:16:35] The value of Progress is 10
+[Debug] [2025-1-8 10:16:35] The value of Progress is 15
+[Debug] [2025-1-8 10:16:35] The value of Progress is 20
+[Debug] [2025-1-8 10:16:35] The value of Progress is 25
+[Debug] [2025-1-8 10:16:35] The value of Progress is 30
+[Debug] [2025-1-8 10:16:35] The value of Progress is 35
+[Debug] [2025-1-8 10:16:35] The value of Progress is 40
+[Debug] [2025-1-8 10:16:36] The value of Progress is 45
+[Debug] [2025-1-8 10:16:36] The value of Progress is 50
+[Debug] [2025-1-8 10:16:36] The value of Progress is 55
+[Debug] [2025-1-8 10:16:36] The value of Progress is 60
+[Debug] [2025-1-8 10:16:36] The value of Progress is 65
+[Debug] [2025-1-8 10:16:36] The value of Progress is 70
+[Debug] [2025-1-8 10:16:36] The value of Progress is 75
+[Debug] [2025-1-8 10:16:36] The value of Progress is 80
+[Debug] [2025-1-8 10:16:36] The value of Progress is 85
+[Debug] [2025-1-8 10:16:36] The value of Progress is 90
+[Debug] [2025-1-8 10:16:36] The value of Progress is 95
+[Debug] [2025-1-8 10:16:37] The value of Progress is 100
+[Debug] [2025-1-8 10:16:37] COMMAND[Program] execute successfully, takes 2.5 secs.
+[Debug] [2025-1-8 10:16:37] End to send programming cmd.
+[Debug] [2025-1-8 10:16:37] Log::Print : The done bit is 1
+[Debug] [2025-1-8 10:16:37] Log::Print : COMMAND[Program] execute successfully, takes 2.5 secs.
+[Debug] [2025-1-8 10:20:38] Begin to send programming cmd...
+[Debug] [2025-1-8 10:20:38] Send RPC:5
+[Debug] [2025-1-8 10:20:38] Begin to send program data.
+[Debug] [2025-1-8 10:20:38] End to send program data.
+[Debug] [2025-1-8 10:20:38] Send cmd [Program:20002] OK
+[Debug] [2025-1-8 10:20:39] The value of Progress is 6
+[Debug] [2025-1-8 10:20:39] The value of Progress is 10
+[Debug] [2025-1-8 10:20:39] The value of Progress is 15
+[Debug] [2025-1-8 10:20:39] The value of Progress is 20
+[Debug] [2025-1-8 10:20:39] The value of Progress is 25
+[Debug] [2025-1-8 10:20:39] The value of Progress is 30
+[Debug] [2025-1-8 10:20:39] The value of Progress is 35
+[Debug] [2025-1-8 10:20:39] The value of Progress is 40
+[Debug] [2025-1-8 10:20:40] The value of Progress is 45
+[Debug] [2025-1-8 10:20:40] The value of Progress is 50
+[Debug] [2025-1-8 10:20:40] The value of Progress is 55
+[Debug] [2025-1-8 10:20:40] The value of Progress is 60
+[Debug] [2025-1-8 10:20:40] The value of Progress is 65
+[Debug] [2025-1-8 10:20:40] The value of Progress is 70
+[Debug] [2025-1-8 10:20:40] The value of Progress is 75
+[Debug] [2025-1-8 10:20:40] The value of Progress is 80
+[Debug] [2025-1-8 10:20:40] The value of Progress is 85
+[Debug] [2025-1-8 10:20:40] The value of Progress is 90
+[Debug] [2025-1-8 10:20:40] The value of Progress is 95
+[Debug] [2025-1-8 10:20:41] The value of Progress is 100
+[Debug] [2025-1-8 10:20:41] COMMAND[Program] execute successfully, takes 2.5 secs.
+[Debug] [2025-1-8 10:20:41] End to send programming cmd.
+[Debug] [2025-1-8 10:20:41] Log::Print : The done bit is 1
+[Debug] [2025-1-8 10:20:41] Log::Print : COMMAND[Program] execute successfully, takes 2.5 secs.
+[Info] [2025-1-8 10:48:23] /***************************End Configration***************************/

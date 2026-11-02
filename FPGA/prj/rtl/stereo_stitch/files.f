@@ -1,0 +1,15 @@
+rtl/camera_ddr3_store/cds_async_fifo.v
+rtl/camera_ddr3_store/cds_capture.v
+rtl/camera_ddr3_store/cds_slots.v
+rtl/camera_ddr3_store/cds_writer.v
+rtl/camera_ddr3_store/cds_reader.v
+rtl/camera_ddr3_store/cds_ddr_port.v
+rtl/camera_ddr3_store/camera_ddr3_store.v
+rtl/camera_ddr3_store/cds_camera_select.v
+rtl/camera_ddr3_store/cds_video_bridge.v
+rtl/stereo_stitch/stereo_mode_select.v
+rtl/stereo_stitch/stereo_read_mux.v
+rtl/debug/uart/uart_byte_tx.v
+rtl/debug/uart/uart_data_tx.v
+rtl/video/vip/tools/divider.v
+rtl/video/vip/tools/matrix_gen/dualport_ram.v
