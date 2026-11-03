@@ -1,205 +1,173 @@
-# FPGA · 视频采集、处理与 PCIe 传输
+# 紫光同创 FPGA 端逻辑工程说明
 
-本目录包含选题三辅助驾驶系统的 FPGA 工程。顶层为 [pcie_video](prj/rtl/pcie_video.v)，负责四路 OV5640 采集、独立 DDR3 双帧槽、四宫格/单摄输出、HDMI 输入、可选图像增强和 PCIe DMA。ARM 端负责目标识别、驾驶规则及 Qt 显示。
+本目录包含面向 **紫光同创 Logos-2 系列 FPGA (`PG2L50H-6IFBG484`)** 的 RTL 源码、IP 核配置、引脚与时序约束文件及仿真工程。FPGA 端作为多源视觉感知前端与高速传输枢纽，负责 **四路 OV5640 720p 并行采集、DDR3 多通道双帧槽缓冲、四宫格/单摄无撕裂读取、HDMI 720p30 接收、VIP 实时图像增强流水线、I2C 从机控制以及 PCIe Gen2 x2 行级 DMA 传输**。
 
-[返回仓库说明](../README.md) · [ARM 使用说明](../arm/README.md)
+## 顶层架构与数据通路 (`pcie_video.v`)
 
-## 工程配置与目录
+```mermaid
+flowchart LR
+    subgraph CLK_RST["时钟与复位管理"]
+        OSC["sys_clk (27 MHz)"] --> PLL["PLL_50mHZ
+cfg_clk (10 MHz) + clk_50m (50 MHz)"]
+        OSC --> DDR_IP["DDR3 PHY/Controller
+core_clk (131.25 MHz)"]
+        REF["PCIe 100 MHz 差分时钟"] --> PCIE_IP["PCIe Gen2 x2 硬核
+pclk_div2 (125 MHz)"]
+    end
 
-| 项目 | 当前文件中的配置 |
-| --- | --- |
-| 工程入口 | [prj/pcie_video.pds](prj/pcie_video.pds) |
-| 顶层模块 | `pcie_video` |
-| 工具版本记录 | PDS / Fabric Compiler `2022.2-SP6.4` |
-| FPGA | Logos2 `PG2L50H`，`FBG484`，速度等级 `-6` |
-| DDR3 接口 | DQ 16 位、DQS 2 位、行 15 位、列 10 位、Bank 3 位 |
-| PCIe | Endpoint，Gen2，x2；用户数据通路 128 位 |
-| 视频输出到 ARM | 1280×720 RGB565，1 像素/拍 |
+    subgraph CAM_PATH["四路 OV5640 采集与 DDR3 双槽存储"]
+        OV["ov5640 ×4
+1280×720 RGB565
+PCLK ~48-50 MHz"] --> CAP["cds_capture ×4
+8像素打包 (130-bit)"]
+        CAP --> AFIFO["cds_async_fifo ×4
+512×130-bit Gray CDC"]
+        AFIFO --> WR["cds_writer ×4 + cds_slots ×4
+16拍突发写 / 每路双帧槽"]
+        WR --> ARB["cds_ddr_port
+四写一读突发轮询仲裁"]
+        ARB <-->|"28-bit 字地址
+128-bit 数据"| DDR_MEM["外部 DDR3 存储器"]
+        ARB --> RD["cds_quad_reader (四宫格)
+/ cds_reader (单摄全幅)"]
+        KEY1["板载 KEY1 按键
+stereo_mode_select"] --> BRIDGE["cds_video_bridge
+4096像素异步FIFO + 欠流恢复"]
+        SYNC["sync_vg
+1280×720@40.4Hz 光栅"] --> BRIDGE
+        RD --> BRIDGE
+    end
 
-```text
-prj/
-├── pcie_video.pds
-├── pcie_video.fdc
-├── rtl/
-│   ├── pcie_video.v             # 系统顶层
-│   ├── ov5640/                  # SCCB 配置、DVP RGB565 采集
-│   ├── hdmi/                    # MS72xx I2C 配置
-│   ├── camera_ddr3_store/       # 四路采集跨域、帧槽、DDR 读写、视频桥
-│   ├── video_control/           # 四宫格读出、视频源与处理路径选择
-│   ├── stereo_stitch/           # 五档模式选择、读复用、MATLAB 辅助素材
-│   ├── video/vip/               # 白平衡、去雾、亮度增强、滤波与色彩转换
-│   ├── pcie/                    # PIO、行 DMA、TLP/DMA 控制
-│   ├── iic_slave/               # ARM 控制寄存器
-│   ├── fram_buf/                # 帧缓存辅助模块与光栅时序
-│   └── debug/uart/              # 保留的 UART 模块
-├── ipcore/                      # PLL、PCIe、DDR3、FIFO 等 Pango IP
-├── constraints/{camera,hdmi}/   # 两套约束副本
-├── generate_bitstream/
-│   ├── camera/pcie_video.sbit
-│   └── hdmi/pcie_video.sbit
-└── sim/                         # ModelSim 工程、VIP TB、图像与调试截图
+    subgraph HDMI_PATH["HDMI 直通接收通路"]
+        MS["ms72xx_ctl
+I2C 初始化 MS7200/7210"]
+        HD_IN["HDMI RX (pixclk_in 74.25 MHz)
+1280×720p30 RGB888"] --> QUANT["源同步寄存对齐
+RGB888 → RGB565 量化"]
+    end
+
+    subgraph VIP_PCIE["视频复用、VIP 增强与 PCIe DMA"]
+        BRIDGE --> CH_SEL["video_channel_selector
+GTP_CLKBUFGMUX 时钟切换"]
+        QUANT --> CH_SEL
+        CH_SEL --> VIP_M["vip 图像增强流水线
+白平衡→去雾→YCbCr→亮度增强→双边滤波"]
+        CH_SEL --> PROC_SEL["video_process_selector
+帧边界安全旁路切换"]
+        VIP_M --> PROC_SEL
+        PROC_SEL --> V_CTRL["video_crtl
+帧边界对齐裁剪"]
+        V_CTRL --> TX_FUN["pcie_tx_fun
+行级异步FIFO (2560B/行) + 4帧基址轮转"]
+        TX_FUN --> DMA_CTRL["ips2l_pcie_dma
+MWr/MRd/CplD TLP 引擎"]
+        PIO["pio_crtl
+BAR0 控制与状态寄存器"] <--> DMA_CTRL
+        DMA_CTRL <-->|"128-bit AXIS"| PCIE_IP
+    end
 ```
 
-目录中还保留其他缓存、图像处理与拼接辅助文件。是否进入当前数据通路，应以顶层的实际实例连接为准。
+## 时钟域划分与跨时钟域（CDC）设计
 
-## 数据通路
+系统内部包含多个独立异步时钟域，各模块边界均采用严格的跨时钟域同步设计：
 
-### 四路摄像头
+| 时钟名称 | 频率 | 来源 | 驱动模块与 CDC 策略 |
+| :--- | :--- | :--- | :--- |
+| `sys_clk` | `27 MHz` | 板载晶振输入 | PLL 参考输入、DDR3 IP 参考时钟、`video_channel_selector` 按键消抖与状态控制 |
+| `cfg_clk` | `10 MHz` | `PLL_50mHZ.clkout0` | 上电 1 ms 延迟复位生成（`rstn_out`）、MS7200/MS7210 HDMI 芯片 I2C 初始化状态机 |
+| `clk_50m` | `50 MHz` | `PLL_50mHZ.clkout1` | 四路 OV5640 SCCB 配置、I2C 从机 (`0x66`)、`sync_vg` 1280×720 光栅发生器（`1650×750` 总周期，约 `40.40 Hz`）及摄像头输出像素域 |
+| `cmos*_pclk` | `~48–50 MHz` | 4 路 OV5640 独立输入 | 各路 `cmos_capture_data` 在原生 PCLK 域拼接 16 位 RGB565 像素，凑齐 8 像素后写入 `cds_async_fifo`（Gray 码指针同步至 `core_clk`） |
+| `core_clk` | `131.25 MHz` | DDR3 控制器输出 | `camera_ddr3_store` 核心时钟域，执行四路写突发与一路读突发的轮询仲裁，读出像素经 `cds_video_bridge` 内部 4096 像素异步 FIFO 跨越至 `clk_50m` |
+| `pixclk_in` | `74.25 MHz` | MS7200 HDMI 接收器 | HDMI 1280×720p30 源同步像素时钟，输入信号先寄存一拍消除组合路径偏斜 |
+| `mux_pclk` | `50 / 74.25 MHz` | `GTP_CLKBUFGMUX` | 经紫光同创专用时钟复用原语在下降沿无毛刺切换的统一后级视频时钟，驱动 `vip`、`video_process_selector`、`video_crtl` 及 `pcie_tx_fun` 写端口 |
+| `pclk_div2` | `125 MHz` | PCIe 硬核输出 | PCIe Gen2 x2 用户数据面与 PIO 控制时钟域，通过 `pcie_tx_fun` 内部异步 FIFO 接收 `mux_pclk` 视频行数据 |
+
+## 核心子系统详解
+
+### 1. 四路摄像头采集与 DDR3 双帧槽存储 (`rtl/camera_ddr3_store/` & `rtl/video_control/`)
+
+为避免四路异步摄像头同时写入与读取造成的画面撕裂或带宽冲突，`camera_ddr3_store` 构建了完整的四写一读帧缓存架构：
+
+- **独立采集与 130-bit 异步 FIFO (`cds_capture.v` + `cds_async_fifo.v`)**：
+  - 每路摄像头在各自 `cam_clk` 下将 8 个连续 16-bit RGB565 像素打包为 128-bit 数据，并附带帧首 `SOF` 与帧尾 `EOF` 标志位，组成 130-bit 条目写入深度为 512（容量 4096 像素 / 8 KiB）的异步 FIFO。
+  - 若极端情况下发生 FIFO 满溢出，模块置位粘滞状态位 `capture_overflow[ch]` 并丢弃当前残帧剩余像素，绝不向 DDR3 发布半帧，待下一帧 `SOF` 自动恢复对齐。
+- **DDR3 地址空间规划与双槽管理 (`cds_slots.v` + `cds_writer.v`)**：
+  - DDR3 接口数据位宽 128-bit，地址位宽 28-bit（**以 16-bit 字为单位寻址**）。
+  - 通道基地址：`Channel_Base = camera_id × 0x200000`；槽位偏移：`Slot_Offset = slot × 0x100000`（每路分配 Slot 0 与 Slot 1 两个独立帧槽，四路共占用 16 MiB）。
+  - 单帧 `1280×720` 共 `921,600` 像素，每次写突发固定 16 拍（`AWLEN = 15`，传输 128 像素 = 2048 bits），每行 10 次突发，整帧精确完成 7200 次写突发且无协议错误后，才将该槽位标记为最新完成帧（`latest_valid`）并递增 32 位帧序号。
+  - 当读端口正在锁定读取某槽位时，写端口自动向另一空闲槽位写入，实现无撕裂 Ping-Pong 切换。
+- **四宫格下采样拼接与五档模式切换 (`cds_quad_reader.v` + `stereo_mode_select.v`)**：
+  - 板载按键 `KEY1` 支持 20 ms 消抖，按 **`0: 四宫格 (Quad)` → `1: 相机1全幅` → `2: 相机2全幅` → `3: 相机3全幅` → `4: 相机4全幅` → `0: 四宫格`** 循环切换，模式变更严格在下一输出帧 `VS` 边界生效。
+  - 四宫格模式下，`cds_quad_reader` 在帧起点同时锁存四路最新有效帧槽，按输出坐标 `(out_x, out_y)` 映射至对应象限（`Cam1` 左上、`Cam2` 右上、`Cam3` 左下、`Cam4` 右下），提取源帧偶行、偶列像素组成 `1280×720` 合成帧。
+- **固定光栅桥接与欠流保护 (`cds_video_bridge.v`)**：
+  - 将 `core_clk` 域可停顿的顺序读像素流通过 4096 像素异步 FIFO 转换为 `clk_50m` 域严格跟随 `sync_vg` 的 `1280×720` 光栅流。若某帧出现数据欠流或未就绪，当帧剩余像素安全填充黑电平并在后台排空至 `EOF`，确保下一帧像素绝对不会发生行列错位。
+
+### 2. VIP 硬件图像增强流水线 (`rtl/video/vip/`)
+
+当 ARM 端通过 I2C 将 `0x03[0]`（预处理总开关）置 1 时，`video_process_selector` 在下一个场同步（`vsync`）上升沿安全切换至 `vip` 处理通路。`vip.v` 内部先把 RGB565 高位复制扩展为 RGB888，随后依次流经以下硬件算子（最后再量化回 RGB565 送入 PCIe DMA）：
+
+| 流水线阶段 | 模块名称 | 源文件 | 控制位 (`vip_crtl`) | 算法原理说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Stage 1** | `image_awb` | `white_balance/white_be.v` | `vip_crtl[0]` (I2C `0x05`) | 基于灰度世界法统计整帧 R/G/B 均值，利用查找表与定点乘法动态计算三通道增益补偿 |
+| **Stage 2** | `vip_dark_channel_top` | `dark_channel/*.v` | `vip_crtl[1]` (I2C `0x06`) | 计 RGB 三通道最小值图与 3×3/5×5 最小值滤波暗通道，估计全局大气光值与透射率图并恢复无雾辐射度 |
+| **Stage 3** | `rgb2ycbcr` | `color_space/rgb2ycbcr.v` | 随 `vip_crtl[3]` 常开 | 定点流水线将 RGB888 转换至 YCbCr 色彩空间，分离亮度分量 `Y` 与色度分量 `Cb/Cr` |
+| **Stage 4** | `light_enhance` | `light_enhance/*.v` | `vip_crtl[2]` (I2C `0x04`) | 统计亮度直方图分布，对 `Y` 分量执行自适应低照度增强与对比度拉伸 |
+| **Stage 5** | `vip_bilateral_filter` | `bilateral_filter/*.v` | 随 `vip_crtl[3]` 常开 | 利用行移位 RAM 构建局部邻域窗口，对 `Y` 分量执行空域+值域双边保边去噪滤波 |
+| **Stage 6** | `ycbcr2rgb` | `color_space/ycbcr2rgb.v` | 随 `vip_crtl[3]` 常开 | 将增强与滤波后的 `YCbCr` 还原为 24-bit `RGB888` 并截取高 `5/6/5` 位输出 `RGB565` |
+
+> **工程说明**：顶层 `pcie_video.v` 中原车牌定位与画框模块（`vdp` / `vdp_box_draw`）已注释移除，I2C 寄存器 `0x04`（对应 `rk_box_draw_ctrl[0]`）在当前 RTL 中实际连接至 `vip_crtl[2]`，即控制 **`light_enhance`（自适应亮度增强）** 子模块。
+
+### 3. PCIe Gen2 x2 行级 DMA 引擎 (`rtl/pcie/`)
+
+- **帧边界对齐 (`video_crtl.v`)**：仅在收到 `pio_crtl` 的启动标志 `start_flag = 1` 且检测到完整新帧 `vsync` 后才放行有效像素 `de`，防止采集启动瞬间传输残缺首帧。
+- **跨时钟域组包与四槽轮转 (`pcie_tx_fun.v`)**：
+  - 每个帧边界同步复位内部 `video_clk -> pcie_clk` 异步 FIFO（位宽转换 `16-bit -> 128-bit`）。
+  - 每写入一行（`1280 像素 = 2560 Bytes`）向 `pclk_div2` 域发起一次行级 DMA 请求（`video_dma_len = 640 DW`），避免在片上消耗整帧 BRAM。
+  - 累加满 720 次行 DMA 完成信号（`dma_tx_done`）后，置位帧完成脉冲 `o_dma_wr_done`，并将帧槽索引 `o_dma_wr_index` 在 `0 → 1 → 2 → 3 → 0` 之间循环递增，切换至对应的 64 位主机物理基地址（`dma_base_addr` ~ `dma_base_addr4`）。
+
+## 目录结构
 
 ```text
-四路 OV5640：各自 DVP / RGB565 / 1280×720
-  → cds_capture / 异步 FIFO
-  → cds_writer + cds_slots：每路两个完整帧槽
-  → cds_ddr_port → DDR3 IP
-  → 四宫格 cds_quad_reader 或单摄顺序读
-  → cds_video_bridge / 1280×720 光栅
-  → 源选择 → 可选 VIP → video_crtl → pcie_tx_fun → PCIe
+FPGA/prj/
+├── pcie_video.pds                # PDS 工程主文件 (器件 PG2L50H-6IFBG484)
+├── pcie_video.fdc                # 顶层引脚分配与时钟约束
+├── constraints/                  # 摄像头与 HDMI 独立测试约束备份
+├── generate_bitstream/           # 编译生成的位流文件 (.sbit)
+├── ipcore/                       # 紫光同创 IP 核目录 (PLL_50mHZ, ddr3, pcie_test 等)
+├── sim/                          # VIP 图像算法仿真脚本与测试图像
+└── rtl/
+    ├── pcie_video.v              # FPGA 顶层模块
+    ├── camera_ddr3_store/        # 四路摄像头 DDR3 双槽存储子系统
+    │   ├── camera_ddr3_store.v   # 存储子系统顶层
+    │   ├── cds_capture.v         # 8 像素打包与 SOF/EOF 标记生成
+    │   ├── cds_async_fifo.v      # 512×130-bit Gray 码异步 FIFO
+    │   ├── cds_slots.v           # 双帧槽状态机与读锁定保护
+    │   ├── cds_writer.v          # 16 拍突发写控制器
+    │   ├── cds_reader.v          # 单路全幅顺序读与随机坐标读控制器
+    │   ├── cds_ddr_port.v        # 四写一读突发轮询仲裁器
+    │   ├── cds_camera_select.v   # 按键消抖与通道选择辅助模块
+    │   └── cds_video_bridge.v    # 顺序读流转固定 50MHz 光栅异步桥
+    ├── video_control/
+    │   ├── cds_quad_reader.v     # 四路帧槽偶行偶列下采样四宫格拼接读取器
+    │   ├── video_channel_selector.v # 摄像头/HDMI 视频源与时钟复用器
+    │   └── video_process_selector.v # 原始流与 VIP 增强流帧边界切换器
+    ├── stereo_stitch/            # KEY1 五档模式选择与双摄拼接扩展模块
+    ├── ov5640/                   # OV5640 SCCB 寄存器配置表 (1280×720 RGB565) 与 DVP 采集
+    ├── hdmi/                     # MS7200 (RX) / MS7210 (TX) I2C 配置状态机
+    ├── video/vip/                # VIP 图像增强流水线 (白平衡/去雾/亮度增强/双边滤波)
+    ├── iic_slave/                # I2C 从机接口 (0x66, 寄存器 0x00~0x06)
+    ├── pcie/                     # PCIe DMA 控制器 (ips2l_pcie_dma)、TX 组包与 PIO 模块
+    └── debug/uart/               # 串口字节与数据包发送模块 (115200 8N1)
 ```
 
-四路摄像头写入独立运行，显示模式只影响读出。帧槽控制避免读会话占用的槽被写入覆盖；四宫格在会话开始时锁定各路可用帧，缺失的源以黑色填充。各路是独立采集流，不能将四宫格理解为外部同步曝光。
+## PDS 工程构建与上板说明
 
-四宫格对各路完整帧保留偶数行、偶数列，得到四个 640×360 视区：
-
-| 区域 | 摄像头 / 内部 ID | ARM 对应视角 |
-| --- | --- | --- |
-| 左上 | 摄像头 1 / ID 0 | 前 |
-| 右上 | 摄像头 2 / ID 1 | 右 |
-| 左下 | 摄像头 3 / ID 2 | 后 |
-| 右下 | 摄像头 4 / ID 3 | 左 |
-
-`KEY1` 低有效，经过消抖，在 **四宫格 → 摄像头 1 → 2 → 3 → 4 → 四宫格** 间循环。模式在帧边界交接，单摄保持全幅 1280×720。
-
-当前 ARM GUI 只读取摄像头/HDMI 源状态，不能同步这个五档模式。四路 ADAS 演示应保持四宫格；ARM 的“放大前视”可在不改变 FPGA 数据布局的情况下放大画面。
-
-### HDMI
-
-HDMI 接收端通过 MS72xx 配置模块初始化。顶层在 `pixclk_in` 域寄存 RGB、VS、HS、DE，并将 RGB888 截取为 RGB565；有效视频使用 DE，未将 HS 当作像素有效信号。
-
-当前使用目标为 **1280×720 逐行 30 Hz**。HDMI 路径不进入摄像头 DDR3 缓存，而是经过源选择、处理选择和 DMA 发送到 ARM。顶层未提供已连接的 FPGA HDMI 发射像素接口；最终显示由 ARM Qt 窗口完成。
-
-源码注释写有“HDMI 强制旁路预处理”，但实际 `processing_path_req = preprocess_sync` 没有按源屏蔽。因此要使用原始 HDMI 通路，需通过 ARM 显式关闭 `0x03[0]`；不能依赖该注释推断预处理一定关闭。
-
-## DDR3 与帧槽
-
-| 内容 | 约定 |
-| --- | --- |
-| 单帧有效负载 | 1280×720×2 = 1,843,200 字节 |
-| 单路存储 | 两个完整 RGB565 帧槽 |
-| 地址单位 | Pango 控制器使用 16 位 RGB565 字地址，不能直接按字节地址解释 |
-| 通道基址 | `camera_id × 0x0200000`，单位为 16 位字 |
-| 槽偏移 | `slot × 0x0100000`，单位为 16 位字，即每槽 2 MiB 空间 |
-| 数据端口 | 128 位；四宫格读模块按 16 拍突发组织数据 |
-
-四路各两个槽共划分 16 MiB 空间，有效图像负载小于所划分槽容量。这套 FPGA DDR3 帧槽与主机的四帧 DMA 环形缓冲用途不同。
-
-[camera_ddr3_store.v](prj/rtl/camera_ddr3_store/camera_ddr3_store.v) 还提供带 tag 的逻辑坐标请求/响应口，当前顶层将 `req_valid` 固定为 0；显示使用顺序读会话，不应把坐标口当作已经接入 ARM 的图像访问接口。
-
-## 图像增强与控制位
-
-当前 VIP 路径包含：RGB565 扩展 → 可选白平衡 → 可选暗通道去雾 → RGB/YCbCr 转换 → 可选亮度增强 → 双边滤波 → RGB 输出。预处理总开关关闭时走原始旁路。
-
-顶层向 `vip_crtl[3:0]` 传入：
-
-```text
-{ preprocess_active, box_draw_active, dehaze_active, white_balance_active }
-         总开关          实际为亮度增强      去雾              白平衡
-```
-
-`vip.v` 实际将 bit 3 解释为总开关、bit 2 解释为亮度增强。顶层的 `vdp`、`vdp_box_draw` 实例及相关输出选择均已注释，当前没有接入车牌定位和画框功能。ARM UI 仍保留“车牌定位+画框”的名称，其对应寄存器在这份 RTL 中实际控制亮度增强。
-
-处理特性控制在像素域同步并在帧边界更新；`video_process_selector` 在原图/处理图交接时等待帧边界并屏蔽交接区间。
-
-## ARM 控制接口
-
-### I2C 寄存器
-
-ARM 使用 `/dev/i2c-0`，FPGA 从机地址为 **7 位 `0x66`**。写入为 `[寄存器地址, 值]`，读取为先写地址、再读一字节。复位时读写控制寄存器均为 0。
-
-| 地址 | 方向 | 当前语义 |
-| --- | --- | --- |
-| `0x00` | R/W | 回环寄存器 |
-| `0x01` | R/W | bit 0：0=摄像头，1=HDMI；每次写入翻转更新 toggle |
-| `0x02` | R | 实际源 bit 0；经跨域同步读回 |
-| `0x03` | R/W | bit 0：VIP 总开关 |
-| `0x04` | R/W | 保留“画框”旧名称，实际进入 VIP bit 2 亮度增强 |
-| `0x05` | R/W | bit 0：白平衡 |
-| `0x06` | R/W | bit 0：暗通道去雾 |
-
-`0x05/0x06` 及亮度增强需在总开关开启时生效。总线控制 SDA/SCL 在当前主约束中分别为 **R19 / P19、LVCMOS33**；实际硬件仍需核对板卡连线与电压。
-
-顶层将源选择器的本地 `key_in` 固定为 1，摄像头/HDMI 切换由 ARM I2C 命令进行。`KEY1` 的用途是摄像头显示模式切换，不能将其误认为 HDMI 切换键。
-
-### PCIe BAR0 / PIO
-
-下表是 RTL 解码使用的**字节偏移**：
-
-| 偏移 | 用途 |
-| --- | --- |
-| `0x000` | 写 `0xffffffe5` 启动视频发送；写 `0xffffff00` 停止 |
-| `0x050` / `0x054` | 主机帧缓冲 0 地址低 / 高 32 位 |
-| `0x020` / `0x024` | 主机帧缓冲 1 地址低 / 高 32 位 |
-| `0x040` / `0x044` | 主机帧缓冲 2 地址低 / 高 32 位 |
-| `0x030` / `0x034` | 主机帧缓冲 3 地址低 / 高 32 位 |
-| `0x060` | 写 1 产生 DMA 配置锁存使能脉冲 |
-| `0x140` | 帧状态：bit 0=完成，bits 2:1=槽号；读取清除完成标志 |
-
-源代码中有“高位完成、低位索引”的旧注释，但实际返回拼接是 `{29'd0, i_wr_index, r_wr_frame_done}`，应以上表为准。
-
-DMA 以一行 **2560 字节 = 640 DW** 为单位，一帧 720 次行请求，使用 64 位主机目标地址和四槽循环。主机地址由驱动配置，不是四路摄像头 DDR3 的地址。
-
-## 在 PDS 中导入与构建
-
-当前文件集保留了工程整理前的路径，重新构建前需要处理以下问题；本 README 只记录操作依据，没有修改 RTL 或 `.pds`。
-
-1. 使用 PDS 2022.2-SP6.4 打开 `prj/pcie_video.pds`，核对器件为 PG2L50H/-6/FBG484，顶层为 `pcie_video`。
-2. `.pds` 中自定义源码大多记录为 `../rtl/...`，而本目录实际为 `prj/rtl/...`。按当前布局将这些引用重新绑定到工程旁的 `rtl/...`。
-3. 工程中还列出缺失的 `../rtl/video/vdp/**` 源文件。当前顶层相关实例已注释；若使用当前不含车牌处理的配置，应从工程源文件列表移除这些失效项。仅改路径不能恢复缺失的功能。
-4. 保留 `.pds` 声明的 IP 描述符：`PLL_50mHZ`、`pcie_test`、`video_buffer`、`ddr3`、`fram_buf/rd_fram_buf`、`fram_buf/wr_fram_buf`，检查 IP 生成文件与当前 PDS 安装匹配。I2C 的 include 目录应能找到 `rtl/iic_slave/i2cSlave_define.v`。
-5. 使用匹配板卡的约束。工程当前引用 `prj/pcie_video.fdc`，它与 `constraints/hdmi/pcie_video.fdc` 内容一致；`constraints/camera/` 为另一份约束副本。不要只切换文件名而跳过引脚、电压、时钟检查。
-6. 运行解析、综合、映射、布局布线和时序检查，再生成位流；确认缺失文件、未驱动网络和关键时序问题已处理。不能以目录中已有 `.sbit` 推断当前源码已经通过这些步骤。
-
-### 时钟核对
-
-| 信号 / 配置 | 当前记录与注意点 |
-| --- | --- |
-| `sys_clk` | 顶层注释为 27 MHz，但 `PLL_50mHZ.v` 的 `CLKIN_FREQ` 为 25.0 MHz；应先核实板载晶振，再统一配置与约束 |
-| `clk_50m` | 摄像头输出光栅和控制逻辑按名义 50 MHz 使用；是否符合该频率取决于 PLL 输入与配置 |
-| `core_clk` | 顶层 DDR 计数说明按 25 MHz×42/8=131.25 MHz 使用；修改 DDR IP 后需同步核对计数值 |
-| 摄像头 DVP 时钟 | 当前 FDC 对四路 `cmos*_pclk` 使用 20.830 ns 周期 |
-| HDMI 像素时钟 | 顶层 720p30 注释为 74.25 MHz，而 FDC 使用 6.670 ns 约束；需按实测输入模式核对 |
-| PCIe | FDC 记录参考时钟 10 ns、`pclk` 4 ns、`pclk_div2` 8 ns |
-
-摄像头输出光栅参数为 H_TOTAL=1650、V_TOTAL=750；在准确 50 MHz 下理论扫描约 40.4 Hz。这是按配置推算的输出节奏，不是摄像头输入帧率、整机有效帧率或无丢帧保证。
-
-### 已有位流
-
-仓库保留 [camera 位流](prj/generate_bitstream/camera/pcie_video.sbit) 和 [hdmi 位流](prj/generate_bitstream/hdmi/pcie_video.sbit)。两者位于不同配置目录，但未附可核验的源码版本、时序验收和整机性能清单。使用前应确认硬件适配；需要与当前源码建立对应关系时应重新构建验证。
-
-## 仿真与辅助素材
-
-- [sim/pcie_video.mpf](prj/sim/pcie_video.mpf) 和 [tb_vip.v](prj/sim/tb/tb_vip.v) 提供 VIP 图像仿真入口；输入与输出素材位于 `sim/img_in`、`sim/img_out`。
-- 当前 TB 顶层名为 `tb_top_bmp`，图像尺寸宏为 713×652，文件路径包含原作者的绝对 Windows 路径。运行前需改为本地输入/输出路径，并与 BMP 实际尺寸一致。
-- TB 的 `vip_crtl` 仍为 2 位，而当前 VIP 端口为 4 位。若要验证启用后的增强通路，需在仿真副本中对齐位宽与控制值；当前 `2'b11` 扩展后不会置位全局 bit 3。
-- 重建仿真库和依赖后再运行，不能将附带的 `sim/work` 编译缓存或已有 BMP 当作当前源码的回归测试结果。该 TB 也不覆盖整条摄像头/DDR3/PCIe 链路。
-- [camera_ddr3_store/files.f](prj/rtl/camera_ddr3_store/files.f) 是存储子系统相关文件清单，不是完整顶层工程构建脚本。
-- `stereo_stitch/matlab/run_stereo_params.m` 提供双图水平平移参数估计，自动匹配需要 Computer Vision Toolbox，也支持人工对应点；结果不会自动写入当前顶层。现行五档模式没有双目无缝拼接模式。
-
-## 上板联调建议
-
-1. 先核对时钟、复位和 DDR3 初始化状态，再确认 ARM 侧 PCIe 枚举与匹配驱动。
-2. 关闭 VIP，以单摄确认完整 1280×720 像素；再切回四宫格核对摄像头 1…4 的位置和画面稳定性。
-3. 在 ARM 打开设备并采集，检查整帧内容和连续槽号；确认每行 2560 字节、单帧 1,843,200 字节。
-4. 由 ARM I2C 选择 HDMI，读取 `0x02` 确认状态，使用匹配时序的道路素材；先显式关闭 VIP 验证原始图。
-5. 按需逐项开启白平衡、去雾、亮度增强，观察切换边界与输出稳定性，再进入 ARM ADAS。
-6. 记录当前实现的资源、时序、各路丢帧与有效传输指标，与 ARM 接收/显示/推理报告分开统计。
-
-可在各自时钟域关注顶层的 `camera_frame_valid`、`camera_capture_overflow`、`camera_write_drop`、`camera_ddr_protocol_error`、`camera_output_underflow` 和帧桥诊断计数；PCIe TX 还保留 FIFO 溢出/欠载调试信号。标记能否进入实际调试网络需在实现后确认。
-
-## 当前边界
-
-- `key2` 和 `stitch_uart_tx` 保留在顶层端口中，但当前没有相应有效功能连接，不能按旧注释宣称可调拼接参数或输出双目状态串口。
-- 板端 LED/链路指示与 ARM ADAS 决策不是同一通路；目前没有从 ARM 决策到 FPGA 驾驶指示灯或车辆执行器的完整接口。
-- 本目录未提供当前顶层经复核的时序、资源、整机端到端延迟和四路稳定运行结论。`ipcore/ddr3/pnr` 内的文件属于 IP 级工程产物，不能作为顶层系统报告。
-- FPGA 的神经网络目标识别不在当前 RTL 内；目标模型部署在 RK3568 NPU，CPU 完成车道线与规则处理。系统功能需与 [ARM 实现](../arm/README.md) 配合验证。
-
-源文件与 Pango IP 保留各自版权/许可声明；请同时保留这些声明和模型随附许可文本。
+1. **工具版本**：推荐使用 **Pango Design Suite (PDS) 2022.2-SP6.4**。
+2. **器件型号**：`PG2L50H-6IFBG484`（Logos-2 系列，封装 FBG484，速度等级 `-6`）。
+3. **检查源文件引用**：打开 `FPGA/prj/pcie_video.pds` 后，确认 `rtl/camera_ddr3_store/` 下的 9 个模块及 `rtl/video_control/cds_quad_reader.v`、`rtl/stereo_stitch/stereo_mode_select.v`、`rtl/stereo_stitch/stereo_read_mux.v` 已包含在工程源文件列表中；若工程树中存在已废弃的旧文件引用（如已注释的 `vdp` 相关文件），在 PDS File List 中将其移除后再执行 **Compile → Synthesize → Device Map → Place & Route → Generate Bitstream**。
+4. **板载按键与指示灯定义**：
+   - `button_rst_n`：全局异步复位（低有效）。
+   - `key1`：本地显示模式循环切换（低有效，20 ms 消抖：四宫格 → 单摄 1 → 单摄 2 → 单摄 3 → 单摄 4 → 四宫格）。
+   - `heart_beat_led`：DDR3 初始化完成且 `core_clk`（131.25 MHz）正常运行时以 `1 Hz` 闪烁。
+   - `ref_led`：PCIe 100 MHz 参考时钟正常时闪烁。
+   - `smlh_link_up`：PCIe 物理层链路训练成功指示。
