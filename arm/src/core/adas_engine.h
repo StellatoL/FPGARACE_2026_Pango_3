@@ -1,74 +1,71 @@
 #ifndef ADAS_ENGINE_H
 #define ADAS_ENGINE_H
-
-// ADAS 决策引擎（纯 C++，无 Qt/OpenCV 依赖，可独立单元测试）
-//
-// 输入：AdasPerception（推理线程产出的感知快照）+ EgoState（UI/键盘模拟的本车状态）
-// 输出：AdasDecision（箭头方向、LED 掩码、报警位、停车/刹车要求、状态文案）
-//
-// 规则与赛题四个现场场景一一对应：
-//   场景1 十字路口：红灯→stop_required；红灯+行驶→alarm_red_run；
-//                   绿灯→放行；箭头随车道（左/直/右），LED0/1/2 对应指示
-//   场景2 虚实线：  转向灯+实线→保持直行；强制变道+实线→alarm_illegal_lane_change；
-//                   转向灯+虚线→箭头随转向（执行变道）
-//   场景3 导航：    导航箭头（视频识别）覆盖默认箭头；实线时保持车道并提示
-//   场景4 行人：    行人闯红灯（斑马线+红灯+行人）→brake_now 立即刹车
-//   附加：超速提醒（模拟车速>限速）、碰撞提醒（TTC/近距障碍）
-//
-// 稳定性设计：所有易抖动的感知输入经 3-of-5 滑窗滞回（Confirm5），
-// 避免单帧误检导致报警闪烁——现场演示成败的关键。
-
-#include <deque>
-#include <unordered_map>
-#include <vector>
-
 #include "core/adas_types.h"
+#include <deque>
+#include <map>
+#include <utility>
 
 namespace adas {
-
 class AdasEngine {
 public:
-  AdasEngine() = default;
-
-  // 执行一次决策（每收到一帧感知 / 本车状态变更时调用）
-  AdasDecision step(const AdasPerception &p, const EgoState &ego);
-
-  // 复位全部滞回状态与轨迹历史（模式切换/复位按钮用）
-  void reset();
-
-  // ---- 可调参数（标定用）----
-  float ttc_threshold_s = 2.0f;   // 碰撞报警 TTC 阈值（秒）
-  float min_speed_kmh = 5.0f;     // 碰撞/刹车判定的最低车速（km/h）
-  float corridor_half_width_pct = 15.0f;  // 本车走廊半宽（% 帧宽）
-  float near_bottom_pct = 85.0f;  // 近距判定：障碍物底边超过帧高此百分比
-  float person_corridor_bottom_pct = 75.0f;  // 行人刹车走廊底边阈值
-
+  void reset(uint64_t generation = 0);
+  // Standalone callers may use the observation clock; asynchronous consumers
+  // pass their actual monotonic time so delayed samples cannot confirm releases.
+  bool ingest(const ObjectObservation &observation, double now_s = -1);
+  bool ingest(const SignalObservation &observation, double now_s = -1);
+  bool ingest(const GeometryObservation &observation, double now_s = -1);
+  bool ingest(const LaneObservation &observation, double now_s = -1);
+  bool ingest(const NavigationObservation &observation, double now_s = -1);
+  bool ingest(const SpeedSample &sample, double now_s = -1);
+  AdasDecision evaluate(const EgoState &ego, double now_s) const;
+  uint64_t generation() const { return generation_; }
+  double front_timeout_s = .5, side_timeout_s = 1.5, external_speed_timeout_s = 1;
+  float ttc_threshold_s = 2;
+  // The default profile requires all legacy obstacle sources. Only an explicit
+  // person/vehicle profile may leave Roadblock unconfigured.
+  unsigned required_obstacle_components = ObjectObservation::All;
+  bool separate_crosswalk_source = false;
 private:
-  // ---- 滞回确认器 ----
-  Confirm5 c_red_, c_green_, c_yellow_;          // 信号灯
-  Confirm5 c_left_solid_, c_left_dashed_;        // 左线类型
-  Confirm5 c_right_solid_, c_right_dashed_;      // 右线类型
-  Confirm5 c_person_red_;                        // 行人闯红灯（斑马线+红灯）
-  Confirm5 c_person_corridor_;                    // 行人进入本车走廊
-  Confirm5 c_obstacle_near_;                      // 近距障碍
-
-  // ---- TTC 估计：按轨迹 ID 维护框高历史 ----
-  struct HeightSample {
-    double t;    // 时间戳（秒）
-    float h;     // 框高（像素）
+  struct Confirm {
+    unsigned bits = 0;
+    bool update(bool raw, bool still = false) {
+      bits = ((bits << 1) | unsigned(raw)) & 31;
+      unsigned b = bits; int count = 0;
+      while (b) { count += b & 1; b >>= 1; }
+      return still ? raw : count >= 3;
+    }
   };
-  std::unordered_map<int, std::deque<HeightSample>> height_hist_;
-
-  static constexpr int kMaxSamplesPerTrack = 8;  // 每轨迹最多保留样本数
-  static constexpr double kSampleWindowS = 1.0;   // 样本时间窗（秒）
-
-  // 估计指定障碍物的 TTC（秒）；无有效增长率时返回 -1
-  float estimate_ttc(const ObstacleInfo &ob, double now_s);
-
-  // 清理超时轨迹的样本历史
-  void prune_track_history(double now_s);
+  bool accept(const Stamp &stamp, const Stamp &old);
+  static bool fresh(const Stamp &stamp, double now, double timeout);
+  bool obstacle_sources_ready(int view, double now, double request_s = 0) const;
+  void update_risk(const ObjectObservation &observation, unsigned component, double now_s);
+  std::array<ObjectObservation,4> objects_{};
+  std::array<Stamp,4> traffic_stamps_{}, vehicle_stamps_{}, roadblock_stamps_{};
+  std::array<Stamp,4> crosswalk_stamps_{};
+  LaneObservation lane_;
+  NavigationObservation navigation_;
+  SpeedSample speed_;
+  Stamp legacy_speed_stamp_;
+  Stamp signal_stamp_;
+  Status signal_status_ = Status::Missing;
+  std::array<bool,3> junction_context_{}, green_ready_{};
+  std::array<std::array<Confirm,3>,3> light_confirm_{};
+  std::array<LightState,3> lights_{};
+  std::array<Confirm,3> nav_confirm_{};
+  Direction confirmed_nav_ = Direction::None;
+  Confirm left_solid_, left_dashed_, right_solid_, right_dashed_;
+  bool left_solid = false, left_dashed = false, right_solid = false, right_dashed = false;
+  Confirm danger_confirm_;
+  bool emergency_ = false;
+  int clear_count_ = 0;
+  Confirm crosswalk_danger_confirm_;
+  bool crosswalk_emergency_ = false;
+  int crosswalk_clear_count_ = 0;
+  struct Risk { bool latched = false; int clear_count = 0; float nearest = -1, ttc = -1; };
+  std::array<Risk,3> risks_{};
+  struct Sample { double t; float h, z; };
+  std::map<std::pair<int,int64_t>,std::deque<Sample>> history_;
+  uint64_t generation_ = 0;
 };
-
-}  // namespace adas
-
-#endif  // ADAS_ENGINE_H
+} // namespace adas
+#endif

@@ -1,165 +1,160 @@
-> **2026-10-30 当前板端工程入口：[`board_project/`](board_project/README.md)。**
-> 640×640双模型交替推理，保留传统车道、短时跟踪、键盘导航和四路侧向安全判断。本版在已选车道边界附近补充阴影、淡漆的原图证据复核，普通前方风险显示“减速 · 保持车道”，并下移底部行为图标；保留板卡原有的检测与显示调整，车道长度、预警比例及安全阈值以本轮开始时状态为准。FPGA通信及原控制按钮逻辑未改，驱动完整包含在[`board_project/drivers/pango_pci_driver_mul.ko`](board_project/drivers/pango_pci_driver_mul.ko)。克隆后进入`board_project/`执行`./build.sh`，再执行`./run_adas.sh`。
-> 六段单路HDMI视频440个采样、每版880次真实推理无运行失败或候选溢出；补回24次原为未知的实线判断，原有已知类型与拟合坐标不变，Qt回归42项通过。补充原图复核有计算代价：独立车道平均79→106ms，P95为108→196ms，不能宣称达到15Hz；真实FPGA实流及显示总延迟仍待验收。详见[车道与显示验证](board_project/docs/lane-display-verification-2026-10-30.md)、[模型接入](board_project/docs/model-replacement-roadmap.md)、[迁移说明](board_project/docs/rk3568-migration.md)和[工程清理](board_project/docs/project-cleanup-2026-10-28.md)。测试源码保留，测试视频、截图、日志和ARM编译产物不纳入发布。
-> 原有`arm/`、`fpga/`工程及下述历史说明原样保留，与`board_project/FPGA`不混用。
+# FPGARACE 2026 · 紫光同创 FPGA + RK3568 辅助驾驶系统
 
-# RK3568_50H 四路环视与 ARM ADAS 工程
+本项目面向全国大学生嵌入式芯片与系统设计竞赛 2026 FPGA 赛道选题三：**以紫光同创 FPGA 为核心的高级辅助驾驶系统**。系统使用 FPGA 完成视频采集、帧缓存、四路画布组织、图像增强与 PCIe 传输，在 RK3568 上完成目标识别、车道线分析、模拟驾驶决策和 Qt 界面显示。
 
-本工程面向紫光同创 RK3568_50H 平台，包含 FPGA 四路地面鸟瞰拼接核心，以及 RK3568 上的 Qt 视频显示、RKNN 推理和 ADAS 演示软件。
+本仓库包含 ARM 应用、FPGA RTL/IP、驱动二进制、RKNN 模型和部分仿真素材。以下说明依据当前目录中的源码与配置整理；功能描述表示已有实现入口，实际帧率、识别精度、时序和整机效果需要在目标板上验证。
 
-**当前是两个可独立开发、验证的子工程，FPGA 环视输出与 ARM 应用尚未完成板级接通。** FPGA 已有 ModelSim 仿真、PDS 综合和无 SDF 综合网表功能验证；ARM 随工程带入了板端文件回放的历史记录。本次目录整理后的实际检查见 [验证报告](doc/validation/README.md)。
+## 阅读入口
 
-## 1. 当前实现与验证范围
+| 文档 | 内容 |
+| --- | --- |
+| [ARM 使用与开发说明](arm/README.md) | RK3568 环境、构建与运行、模型、快捷键、标定、诊断报告 |
+| [FPGA 工程说明](FPGA/README.md) | PDS 工程、摄像头与 HDMI 通路、DDR3、PCIe/DMA、I2C、约束与仿真 |
 
-| 部分 | 已有内容 | 当前边界 |
-|---|---|---|
-| FPGA AVM | 四路 RGB565 帧存读取、坐标映射、双线性插值、增益与接缝融合、光栅重排 | 输入由内存事务模型提供，尚无板级相机采集/物理 DDR 顶层 |
-| FPGA 验证 | Python 位精确参考、MATLAB 独立参考、ModelSim 单元/整帧、PDS ADS 综合、720p 网表功能仿真 | 无布局布线、SDF、真实板卡帧率或完整 bitstream |
-| ARM 应用 | Qt 5 显示、文件回放、旧 PCIe 接收、车牌/交通检测、跟踪、车道线/导航识别、ADAS 规则与 HUD | 所带 RKNN 运行库和驱动是 Linux AArch64 二进制，需匹配板端环境 |
-| ARM 历史验证 | 导入记录描述了 RK3568 LubanCat 上的构建、文件输入与 GUI 检查 | 当时无 PCIe 驱动设备；不是本机重测，也不是本 FPGA 核心的联调证据 |
-| 本次 ARM 主机验证 | 在 WSL 上编译运行 CPU 测试，并检查 qmake、资源部署和启动参数 | 不执行 AArch64 NPU、内核驱动或完整 GUI 应用 |
-| FPGA ↔ ARM | ARM 保留旧 PCIe/I2C 接口代码 | AVM 核心尚未实现对应寄存器、DMA、帧缓冲管理及实体 LED 通路 |
-
-“360 环景”在这里指四路图像的**二维地面鸟瞰拼接**。高物体拉伸、运动重影、真实标定与同步问题仍需实拍验证。ARM 车道/交通算法处理的透视图像与鸟瞰输出有不同语义，接入时需要明确输入流和 ROI，不能仅凭相同分辨率认定兼容。
-
-## 2. 目录
-
-```text
-ADAS/
-├── README.md / LICENSE / .gitignore / .gitattributes
-├── arm/                           ARM 软件根目录
-│   ├── adas_arm.pro               Qt 5 qmake 工程，目标 img_recv_demo
-│   ├── build.sh / run.sh           构建、部署模型、启动
-│   ├── src/                       UI、核心算法、推理、硬件与公共代码
-│   ├── tests/                     CPU 测试及运行脚本
-│   ├── tools/                     场景生成、模型转换、RKNN 诊断
-│   ├── resources/                 QSS、图标
-│   ├── models/                    原始 RKNN 模型与资产说明
-│   ├── third_party/               RKNN 运行库/头文件、ztu 头文件
-│   ├── drivers/prebuilt/          仅提供二进制的旧 PCIe 驱动
-│   ├── doc/history/               导入的计划和板端记录
-│   └── build/                     本地生成，不纳入版本控制
-├── fpga/                          FPGA 自包含子工程
-│   ├── src/rtl/ / src/files.f      唯一维护的生产 RTL
-│   ├── sim/                       ModelSim 入口、TB、DDR 模型、样例
-│   ├── constraints/               核心时钟约束
-│   ├── project/pds/               PDS 工程模板
-│   ├── tools/avm/                 Python/MATLAB 模型及仿真/综合运行器
-│   ├── doc/                       FPGA 接口、说明、历史和验证证据
-│   ├── build/                     隔离构建、仿真输出及旧发布 checkout
-│   └── archive/                   原 FPGA 备份与历史资料
-├── doc/                           整体架构、接口状态、计划、验证报告
-├── tools/release/                 暂存内容、敏感信息和文档链接检查
-└── archive/                       本地备份目录，不随 Git 提交
-```
-
-`src/`、`sim/`、`doc/` 在需要它们的子工程中就近维护。所有 FPGA 文档内未特别注明的命令都从 `fpga/` 执行；ARM 文档内命令从 `arm/` 执行。历史资料保留当时路径，当前入口以各子工程 README 为准。
-
-## 3. FPGA 快速使用（Windows）
-
-依赖 Python 3.10+（本机 3.13）、ModelSim 10.7、PDS 2022.2-SP6.4；独立 MATLAB 参考使用 R2024b。确保 `vlib`、`vmap`、`vlog`、`vsim` 在 PATH。
-
-从远端克隆后进入 FPGA 子工程（私有仓库需要已有访问权限）：
-
-```powershell
-git clone https://github.com/StellatoL/FPGARACE_2026_Pango_3.git
-cd FPGARACE_2026_Pango_3/fpga
-python -m pip install -r tools/avm/requirements.txt
-python -X utf8 tools/avm/generate.py --case small
-python -X utf8 sim/run.py --case small --profile stress --wave
-python -X utf8 tools/avm/run_units.py
-```
-
-完整算法与 RTL 验证（首次生成公开样例需要网络）：
-
-```powershell
-python -u -X utf8 tools/avm/run_all.py --regenerate --matlab --full-stress
-```
-
-已有完整样例时可执行 `python -u -X utf8 tools/avm/run_all.py --full-stress`，这会复用已有 MATLAB 参考。综合命令为：
-
-```powershell
-python -u -X utf8 tools/avm/run_pds.py --label baseline
-```
-
-之后按打印的构建路径运行综合网表仿真，详见 [FPGA README](fpga/README.md)、[PDS 入口](fpga/project/README.md)。生成的 `.pds` 是算法核心综合工程；目前不能作为板级成品直接烧录。
-
-## 4. ARM 快速使用（板端 Linux AArch64）
-
-完整应用需要 RK3568 的 64 位 Linux、Qt 5、OpenCV 4，以及与板端 NPU 驱动匹配的 RKNN 运行库。仓库附带 [Pango PCIe 驱动](arm/drivers/prebuilt/pango_pci_driver_mul.ko)，但不附带模型、RKNN 运行库和受限的 `rknn_api.h`；先按 [SDK 放置说明](arm/third_party/README.md) 补齐依赖并核对 [资产清单](arm/models/assets.json)。驱动适配条件见 [驱动说明](arm/drivers/README.md)。
-
-Ubuntu/Debian 板端依赖安装与构建示例：
-
-```bash
-cd arm
-sudo apt-get update
-sudo apt-get install build-essential qtbase5-dev qt5-qmake pkg-config \
-  libopencv-dev libopencv-contrib-dev libfreetype6-dev
-bash build.sh --check
-bash build.sh
-bash run.sh
-```
-
-直接进入 ADAS 文件回放：
-
-```bash
-bash run.sh --adas /absolute/path/to/road.mp4
-```
-
-默认输出 `arm/build/release/`。构建脚本将运行库和全部模型复制到输出目录，启动器处理样式路径；也支持带空格的路径。`BUILD_DIR` 在构建与运行时应保持一致，相对路径以 `arm/` 为基准。`NO_RGA=1 bash build.sh` 可以关闭可选 RGA 分支。
-
-本机 x86_64 WSL 可以执行 CPU 测试：
-
-```bash
-bash arm/tests/run_host_tests.sh
-```
-
-它不会运行 RKNN 或加载 `.ko`。完整应用构建、诊断、视频 E2E 及模型转换说明见 [ARM README](arm/README.md)。
-
-## 5. 整体数据通路
+## 系统架构
 
 ```mermaid
 flowchart LR
-    A[四路图像与标定] --> B[FPGA 外部帧存事务接口]
-    B --> C[AVM 插值 / 增益 / 融合 / 重排]
-    C --> D[RGB565 ready-valid 输出]
-    D -. 待实现帧缓存与物理传输 .-> E[ARM 旧 PCIe 接收接口]
-    F[文件 / 视频输入] --> G[ARM 显示与推理队列]
-    E --> G
-    G --> H[RKNN 检测 / CPU 视觉 / 跟踪]
-    H --> I[ADAS 决策 / HUD / 屏幕 LED]
+    CAM[四路 OV5640 / DVP] --> DDR[DDR3 每路双帧槽]
+    DDR --> VIEW[四宫格 / 单摄 720p]
+    PC[电脑播放道路素材] --> HDMI[HDMI 接收 / RGB565]
+    VIEW --> MUX[视频源选择]
+    HDMI --> MUX
+    MUX --> VIP[可选图像增强 / 旁路]
+    VIP --> DMA[PCIe Gen2 x2 / DMA]
+    DMA --> ARM[RK3568 帧接收]
+    ARM --> RGA[RGA 图像预处理]
+    RGA --> NPU[双 RKNN 模型]
+    ARM --> CPU[CPU 车道线分析]
+    NPU --> RULE[跟踪 / 规则决策 / 局部路径]
+    CPU --> RULE
+    RULE --> QT[Qt 视频与 HUD]
+    QT -. I2C 控制 .-> MUX
+    QT -. I2C 控制 .-> VIP
 ```
 
-实线描述子工程已存在的通路；跨端虚线是待实现的连接。原 ARM I2C 命令属于旧设计，不能直接控制当前 `avm_core`。缓冲所有权、丢帧策略、帧同步、颜色布局和复位流程都需要统一，详见 [接口与联调状态](doc/integration-status.md)。
+### 软硬件分工
 
-## 6. 结果如何解读
+| 部分 | 当前源码职责 |
+| --- | --- |
+| FPGA | 四路 OV5640 RGB565 采集；每路完整 1280×720 帧的 DDR3 双槽存储；四宫格或单摄输出；HDMI 输入；可选白平衡、暗通道去雾、亮度增强与双边滤波；PCIe 视频 DMA |
+| RK3568 RGA | 将 RGB565 视区裁剪、缩放并转换为模型需要的 RGB 输入；神经网络图像预处理没有 CPU 降级路径 |
+| RK3568 NPU | `vehicle.rknn` 提供行人和车辆感知；`traffic.rknn` 提供斑马线、信号灯及斑马线行人关系 |
+| ARM CPU / OpenCV | 前视车道线拟合、虚实线判断、目标跟踪、标定换算、碰撞风险与变道规则、局部模拟路径 |
+| Qt | 视频显示、检测框、车道与路径叠加、驾驶状态/报警、手动模拟、标定和性能诊断 |
 
-FPGA 已有结果中，有限接缝 720p 标称内存场景为 28.31660 ms，全交叠为 36.34548 ms，随机压力为 54.58745 ms。后两者未达到 30 fps。这些是事务模型下从帧就绪到最后像素的处理耗时，不是相机到显示的实测延迟。
+### 视频与通信约定
 
-1280×720 综合使用 9,732 LUT、8,871 寄存器、52 DRM36K、66 APM；综合估计 103.8529 MHz，100 MHz 目标 slack +0.371 ns。此数值不是布局布线后的签核。历史公开摘要见 [FPGA 验证摘要](fpga/doc/validation/README.md)，本次重跑及资产完整性见 [本次验证报告](doc/validation/README.md)。
+- FPGA → ARM 固定传输一张 **1280×720、RGB565、每像素 2 字节**的图像，单帧 **1,843,200 字节**。
+- 摄像头四宫格由四路完整帧分别隔行、隔列取样为 640×360 后组成。它是四个视角的画布，未实现环视几何融合或无缝鸟瞰。
+- 摄像头 1/2/3/4 分别位于左上/右上/左下/右下；ARM 将其解释为前/右/后/左，接线时应按这个顺序安排视角。
+- FPGA 本地 `KEY1` 可在四宫格和四个全幅单摄之间循环；ARM 目前只按 I2C 源状态区分“摄像头四宫格”和“HDMI 单前视”。运行四路 ADAS 时应保持 FPGA 为四宫格。
+- HDMI 路径以 1280×720 逐行 30 Hz 输入为使用目标；道路素材在电脑端播放，经 HDMI 进入 FPGA，再经 PCIe 到 ARM。ARM 应用没有本地视频文件/USB 摄像头输入选项。
+- PCIe 配置为 Gen2 x2，DMA 以每行 2560 字节组织，主机使用四帧环形缓冲。I2C 使用 `/dev/i2c-0`、7 位地址 `0x66`，负责源选择和预处理控制。
 
-ARM 历史记录中的“上板”只指该记录描述的 ARM 文件回放环境，不能解释为四路相机、AVM、PCIe、RK3568 显示整机链路已经通过。ADAS 的速度输入包含演示用模拟量，LED 为屏幕显示；当前没有实体执行器控制闭环。
+## 仓库结构
 
-## 7. 下一步联调顺序
+```text
+.
+├── README.md
+├── arm/
+│   ├── README.md
+│   ├── build.sh                  # AArch64 原生构建与依赖检查
+│   ├── run_adas.sh               # 默认构建目录启动入口
+│   ├── ZYNQ_video_show.pro       # Qt 5 qmake 工程，目标 img_recv_demo
+│   ├── src/                     # 硬件接收、推理、规则引擎和界面
+│   ├── models/adas/             # 双 RKNN 模型、清单和来源记录
+│   ├── third_party/rknn/        # RKNN 头文件和 AArch64 用户态运行库
+│   ├── drivers/                 # PCIe Linux 内核模块二进制
+│   ├── config/adas.ini          # 感知超时、运行时 ROI/标定配置入口
+│   └── resources/               # 样式和图标
+├── FPGA/
+│   ├── README.md
+│   └── prj/
+│       ├── pcie_video.pds       # PDS 工程入口
+│       ├── pcie_video.fdc       # 当前工程约束
+│       ├── rtl/                 # 顶层与自定义 Verilog 模块
+│       ├── ipcore/              # Pango PLL、PCIe、DDR3、FIFO 等 IP
+│       ├── constraints/         # camera / hdmi 约束副本
+│       ├── generate_bitstream/  # camera / hdmi 现有 sbit 文件
+│       └── sim/                 # VIP 仿真、输入输出图像和调试截图
+└── doc/                         # 本地预留目录，当前为空
+```
 
-1. 根据 RK3568_50H 原理图核实实际 FPGA 型号、封装、DDR、相机及 FPGA—ARM 连接；当前 PDS 目标为 `PG2L50H-6IFBG484`，ARM 旧文档中的其他型号不作为约束依据。
-2. 建立 FPGA 板级顶层、四路采集、物理 DDR、帧同步与真实管脚/时钟约束。
-3. 约定传输协议和帧所有权，提供可复编驱动及 MMIO/DMA 适配，明确送往 ARM 的鸟瞰/前视流。
-4. 在 RK3568 核对 RKNN 版本、模型输入输出、真实视频识别质量、缓冲稳定性和 GUI 延迟。
-5. 完成 CDC、布局布线与时序签核，再执行相机到显示的长时间板级验证并更新状态。
+`ZYNQ_video_show.pro` 是保留的工程文件名；当前应用面向 RK3568 AArch64 Linux，不能据此判断为 Xilinx Zynq 工程。
 
-## 8. 提交范围、验证证据与许可
+## 环境与快速开始
 
-本次提交将此前单独的 FPGA 工程移入 `fpga/`，加入 `arm/` 源码、脚本和系统文档。提交继承原仓库历史和可见性，没有上传本地备份、会话便笺、原始工具日志、仿真工作库或厂商安装文件。
+### 硬件与工具
 
-四个 RKNN 模型、`librknnrt.so` 和受限的 `rknn_api.h` 需在兼容且获授权的环境中自行准备。路径、SHA256 和角色见 [资产清单](arm/models/assets.json) 与 [SDK 说明](arm/third_party/README.md)。补齐之前，ARM CPU 测试可以运行，完整应用构建会明确提示缺少资产。
+- FPGA 工程器件配置为 **Pango Logos2 PG2L50H、FBG484、速度等级 -6**；需要与约束、DDR3、PCIe、摄像头/HDMI 引脚匹配的硬件。
+- ARM 端使用 RK3568 的 64 位 Linux，具备可用的 PCIe、I2C、RGA、RKNN/NPU 驱动及图形桌面。
+- FPGA 工程记录的工具版本为 **PDS 2022.2-SP6.4**。
+- ARM 需要 C++17、Qt 5 Widgets/Network、OpenCV 4、qmake、make 和 pkg-config。模型清单要求 RKNN Runtime API 版本前缀 `2.3.2 (`。
 
-用户要求随仓库提交 `pango_pci_driver_mul.ko`。提交副本仅替换 4 处非加载调试区中的个人编译目录，其他字节均经核验未变；本地原件保留。驱动标注 `GPL v2`、`6.1.99 SMP mod_unload aarch64`，没有驱动源码或板级加载验证，详见 [处理记录](arm/drivers/prebuilt/publication-metadata.json)。
+### 1. 准备 FPGA
 
-[验证摘要](doc/validation/README.md) 提供真实结果、PASS 摘录和源码哈希；它们是经过筛选的摘要，不是完整原始日志。本次未执行 ARM 完整应用或跨端板级验证。后续修改应重新运行相关检查再更新状态。
+阅读 [FPGA 构建说明](FPGA/README.md)，核对器件、板卡连线和约束后加载相应位流。重新构建时，需要先处理 `.pds` 中的旧 RTL 路径及缺失的 VDP 文件引用；现有工程不能直接视为已经验证的一键构建包。
 
-提交前可运行 `python tools/release/check_publication.py --self-test` 和 `python tools/release/check_publication.py`，检查实际 Git 暂存 blob、文件范围、敏感模式、图片元数据、链接与源码哈希。后续新增文件需同步维护发布清单，见 [发布工具说明](tools/release/README.md)。
+### 2. 在 RK3568 上构建 ARM 应用
 
-根 [LICENSE](LICENSE) 保留原远端 Apache-2.0 原文。第三方封装保留导入内容，来源版本未完整提供，不由根 LICENSE 重新授予许可；RKNN SDK、模型、驱动按各自条款准备。FPGA 公开样例的 MIT 声明见 [第三方声明](fpga/tools/avm/THIRD_PARTY_LICENSE.txt)。
+以下命令在仓库的 `arm/` 目录执行：
 
-[整体架构](doc/architecture.md) · [文档索引](doc/README.md) · [ARM 说明](arm/README.md) · [FPGA 说明](fpga/README.md)
+```bash
+bash build.sh --check
+# Ubuntu / Debian 缺少基础构建包时：
+bash build.sh --install-deps
+# 依赖齐全时直接构建：
+bash build.sh
+```
+
+输出位于 `arm/build_adas/`，可执行文件为 `img_recv_demo`。构建脚本会准备模型/资源/配置链接和本地 RKNN 运行库；RGA BSP 组件、内核驱动和 FPGA 位流需要单独准备。
+
+### 3. 检查并加载 PCIe 驱动
+
+```bash
+uname -r
+modinfo drivers/pango_pci_driver_mul.ko
+# 确认与运行内核兼容，且尚未加载时：
+sudo insmod drivers/pango_pci_driver_mul.ko
+ls -l /dev/pango_pci_driver /dev/i2c-0 /dev/mem
+```
+
+附带模块的 `vermagic` 为 `6.1.99 SMP mod_unload aarch64`。仓库未附该驱动的源码/Makefile；其他内核需要匹配的驱动构建。应用通过 `/dev/mem` 映射 BAR0，运行账号还需具备相应设备访问权限。
+
+### 4. 先确认画面，再启动 ADAS
+
+```bash
+sh ./run_adas.sh --mode raw
+```
+
+在界面点击“打开”，选择“摄像头”或“HDMI”，再点击“采集视频”。HDMI 演示时，先让电脑输出匹配的视频时序并全屏播放素材；四路演示时保持 FPGA 四宫格。确认画面正确后点击“ADAS 辅助驾驶”，设置当前车道、信号灯 ROI 和仿真速度。
+
+完整参数、权限与 RGA 排查方法见 [ARM README](arm/README.md)。
+
+## 赛题场景演示
+
+| 场景 | 操作与观察点 |
+| --- | --- |
+| 路口灯控 | 选择左/直行/右车道，分别配置灯 ROI；观察红/黄灯停车、绿灯放行；红灯下使用“强制行驶”验证报警 |
+| 虚实线变道 | 道路画面中发出左/右意图；虚线、目标路径与相关视区条件满足时显示模拟变道路径；强制实线变道触发报警 |
+| 行人/车辆风险 | 使用行人进入行驶区域或斑马线、前车接近等素材，观察行人急刹、碰撞风险和减速提示 |
+| 超速 | 在界面设置仿真速度与限速，观察超速报警；当前速度来自手动输入 |
+| 导航与路径 | 通过方向键或导航下拉框输入左/直行/右意图，观察规则约束后的局部路径叠加 |
+
+所有“停车、行驶、转向、刹车”均为界面中的模拟状态与提示。当前工程没有接入真实车辆执行器，也没有将决策 LED 掩码输出到物理驾驶指示灯的完整通路。
+
+## 验证与当前边界
+
+1. **采集、显示和推理频率分别统计。** 四路感知按任务调度执行，不能把输入帧率当成每路双模型的识别帧率。ARM 可通过界面“导出诊断报告…”或 `--report` 生成 JSON。
+2. **报告中的延迟是 ARM 接收回调到 Qt 图像更新的时间。** 不包含摄像头曝光、FPGA/DDR3、显示扫描及事件确认，不能作为整机端到端延迟。
+3. **当前模型没有专用路障类别。** 已有行人、车辆、信号灯和斑马线模型；代码中的路障状态接口不代表已经部署路障模型。
+4. **导航和速度采用手动模拟。** 当前 GUI 没有道路视频中导航图标自动识别或真实车速接入流程。局部规划是基于车道几何与障碍约束的画面路径。
+5. **预处理控制存在旧命名。** UI 的“车牌定位+画框”寄存器在当前 RTL 中实际进入亮度增强控制位，车牌定位/画框实例已被注释；HDMI 也未在选择逻辑中强制关闭 VIP。详细映射见 [FPGA README](FPGA/README.md)。
+6. **构建与硬件测试需分别完成。** 当前目录未提供整机验收报告、当前顶层的时序/资源结论或自动化测试套件。IP 自带报告、仿真输出图和现有位流不能替代当前整机验证。
+
+针对赛题，仍需在目标硬件上记录四路采集与丢帧情况、各模型识别效果、各阶段帧率/延迟、FPGA 资源与时序，并准备现场素材与演示视频。
+
+## 第三方文件
+
+RKNN 模型附带的许可文本位于 [models/adas/licenses](arm/models/adas/licenses/)，来源记录位于 [provenance.json](arm/models/adas/provenance.json)。FPGA IP、图像处理与 I2C 源文件包含各自的版权或许可声明。仓库未提供覆盖全部内容的统一许可证，使用这些文件时应保留各自声明。

@@ -1,36 +1,46 @@
-// 主入口：创建 Qt 应用程序并显示主窗口
-// PCIe 视频传输上位机 — FPGA→ARM 车牌识别 / 交通场景检测 / ADAS 辅助驾驶 / 纯视频
-//
-// 命令行：
-//   img_recv_demo                      # 正常启动
-//   img_recv_demo --adas <视频/图片>    # 启动即进入 ADAS 模式并回放指定文件
-//                                      # （U 盘场景视频演示快捷入口）
-
 #include "ui/mainwindow.h"
 #include <QApplication>
+#include <QCommandLineParser>
+#include <QDir>
 #include <QFile>
-#include <QString>
+#include <QTimer>
+#include <cmath>
+#include <opencv2/core.hpp>
 
-int main(int argc, char *argv[])
-{
-    QApplication a(argc, argv);
-    a.setApplicationName(QStringLiteral("Pango PCIe Video"));
-
-    // 加载暗色主题样式表
-    QFile style_file(QStringLiteral("resources/style.qss"));
-    if (style_file.open(QFile::ReadOnly)) {
-        a.setStyleSheet(QString::fromUtf8(style_file.readAll()));
-        style_file.close();
-    }
-
-    MainWindow w;
-    w.show();
-
-    // --adas <file>：启动即进入 ADAS 模式并回放指定场景视频
-    if (argc >= 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--adas")) {
-        const QString path = QString::fromLocal8Bit(argv[2]);
-        w.startup_adas_with_file(path);
-    }
-
-    return a.exec();
+int main(int argc,char *argv[]) {
+  QApplication app(argc,argv);
+  cv::setNumThreads(1); // Bound optional diagnostic OpenCV work.
+  app.setApplicationName(QStringLiteral("Pango ADAS"));
+  QCommandLineParser parser;
+  parser.setApplicationDescription(QStringLiteral("FPGA + RK3568 ADAS · 摄像头 / HDMI 经 FPGA 输入"));
+  parser.addHelpOption();
+  parser.addOption({"single-view",QStringLiteral("初始布局为单路前视；FPGA实际源确认后自动同步")});
+  parser.addOption({"mode",QStringLiteral("adas / raw"),"mode","adas"});
+  parser.addOption({"quit-after",QStringLiteral("测试运行秒数，到时正常关闭"),"seconds"});
+  parser.addOption({"report",QStringLiteral("退出时保存性能/能力 JSON"),"path"});
+  parser.addOption({"screenshot",QStringLiteral("测试结束时保存界面截图"),"path"});
+  parser.addOption({"window-size",QStringLiteral("测试窗口尺寸，例如 1024x600"),"WxH"});
+  parser.process(app);
+  const QString mode=parser.value("mode");
+  if(!QStringList{"adas","raw"}.contains(mode))parser.showHelp(2);
+  bool ok=true;double duration=0;
+  if(parser.isSet("quit-after")) {
+    duration=parser.value("quit-after").toDouble(&ok);
+    if(!ok||!std::isfinite(duration)||duration<=0||duration>86400)parser.showHelp(2);
+  }
+  QDir root(QCoreApplication::applicationDirPath());if(!root.exists("resources"))root.cdUp();
+  QFile style(root.filePath("resources/style.qss"));
+  if(style.open(QFile::ReadOnly))app.setStyleSheet(QString::fromUtf8(style.readAll()));
+  MainWindow window;
+  if(parser.isSet("single-view"))window.set_single_view(true);
+  window.set_detection_mode(mode=="raw"?DetectionMode::RawVideo:DetectionMode::Adas);
+  if(parser.isSet("window-size")) {
+    auto dimensions=parser.value("window-size").split('x');
+    if(dimensions.size()!=2||dimensions[0].toInt()<900||dimensions[1].toInt()<540)parser.showHelp(2);
+    window.resize(dimensions[0].toInt(),dimensions[1].toInt());
+  }
+  window.show();
+  QObject::connect(&app,&QCoreApplication::aboutToQuit,&window,[&](){window.write_adas_report(parser.value("report"));});
+  if(duration>0)QTimer::singleShot(int(duration*1000),&window,[&](){window.save_adas_screenshot(parser.value("screenshot"));window.close();});
+  return app.exec();
 }

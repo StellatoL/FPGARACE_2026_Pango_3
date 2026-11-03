@@ -1,174 +1,178 @@
 #ifndef ADAS_TYPES_H
 #define ADAS_TYPES_H
 
-// ADAS 公共类型定义 —— 纯 C++17，无 Qt/OpenCV 依赖，可独立单元测试。
-// 与赛题（选题三）四个现场场景一一对应：
-//   场景1 十字路口红绿灯 / 场景2 虚实线变道
-//   场景3 导航模拟智驾   / 场景4 行人闯红灯刹车
-
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace adas {
+enum class ViewId : int { Front = 0, Right = 1, Rear = 2, Left = 3 };
+enum class Layout : int { Mosaic = 0, Single = 1 };
+enum class Status : int { Missing = 0, Valid, Failed };
+enum class LaneId : int { Left = 0, Center = 1, Right = 2 };
+enum class TurnSignal : int { None = 0, Left, Right };
+enum class Direction : int { None = 0, Left, Straight, Right };
+using NavDir = Direction;
+using ArrowDir = Direction;
+enum class LineType : int { Unknown = 0, Solid, Dashed };
+enum class LightState : int { Unknown = 0, Red, Green, Yellow, Black };
+enum class SpeedSource : int { Simulation = 0, External, Unavailable };
+enum class Maneuver : int { KeepLane = 0, ChangeLeft, ChangeRight, Stop };
 
-// ===== 枚举 =====
-
-// 本车所在车道（按键切换：1/2/3 或 UI 单选）
-enum class LaneId : uint8_t { Left = 0, Center = 1, Right = 2 };
-
-// 转向灯（按键模拟：A/D）
-enum class TurnSignal : uint8_t { None = 0, Left = 1, Right = 2 };
-
-// 信号灯状态（NPU 检测 6 类中的 2红/3绿/4黑/5黄 归并）
-enum class LightState : uint8_t { Unknown = 0, Red, Green, Yellow, Black };
-
-// 行驶行为箭头方向（叠加显示 / LED 指示）
-enum class ArrowDir : uint8_t { None = 0, Left, Straight, Right };
-
-// 车道线类型（场景2 判决依据）
-enum class LineType : uint8_t { Unknown = 0, Solid, Dashed };
-
-// 导航指令方向（场景3：识别视频内导航箭头）
-enum class NavDir : uint8_t { None = 0, Left, Straight, Right };
-
-// ===== 感知结构（推理线程产出，随 VisionFrameResult 传递）=====
-
-// 车道线虚实分析结果（LaneLineAnalyzer 每帧产出，无帧间状态）
-struct LaneLineInfo {
-  bool left_valid = false;             // 左线是否有效检出
-  bool right_valid = false;            // 右线是否有效检出
-  LineType left_type = LineType::Unknown;  // 左线类型
-  LineType right_type = LineType::Unknown; // 右线类型
-  int left_x = 0;                       // 左线在 ROI 底部的 x 坐标
-  int right_x = 0;                      // 右线在 ROI 底部的 x 坐标
-  float left_conf = 0.0f;               // 左线置信度 [0,1]
-  float right_conf = 0.0f;              // 右线置信度 [0,1]
-  int lane_center_offset = 0;           // 车道中心相对画面中心的偏移（像素）
+struct Stamp {
+  uint64_t generation = 0, sequence = 0;
+  double source_s = 0, receive_s = 0;
+  bool static_image = false;
 };
-
-// 导航箭头识别结果（NavArrowDetector 产出，含帧间确认状态）
-struct NavArrowInfo {
-  bool detected = false;                // 当前是否有已确认的导航方向
-  NavDir dir = NavDir::None;            // 导航方向
-  float conf = 0.0f;                    // 判向置信度 [0,1]
-  int cx = 0;                           // 箭头中心 x（叠加框提示用）
-  int cy = 0;                           // 箭头中心 y
+struct Roi { double x = 0, y = 0, w = 1, h = 1; };
+struct Box { float left = 0, top = 0, right = 0, bottom = 0; };
+struct LaneInfo {
+  bool left_valid = false, right_valid = false;
+  LineType left_type = LineType::Unknown, right_type = LineType::Unknown;
+  float left_x = 0, right_x = 0, center_offset = 0;
+  float left_top_x = 0, right_top_x = 0, top_y = 0, bottom_y = 0;
+  float left_conf = 0, right_conf = 0;
 };
-
-// 单个障碍物（SORT 跟踪输出：行人/车辆）
-struct ObstacleInfo {
-  int class_id = -1;                    // 1=行人 10=车辆（与 traffic_scene_rules 一致）
-  int track_id = -1;                    // SORT 轨迹 ID（TTC 估计用）
-  float cx = 0.0f, cy = 0.0f;           // 中心坐标
-  float vx = 0.0f, vy = 0.0f;           // 速度（像素/帧）
-  int left = 0, top = 0, right = 0, bottom = 0;  // 边界框
+struct NavInfo {
+  bool detected = false;
+  Direction dir = Direction::None;
+  float confidence = 0;
+  Box box;
 };
-
-// 一帧 ADAS 感知快照：NPU 检测 + 车道线 + 导航箭头的聚合
-struct AdasPerception {
-  bool valid = false;                   // 本帧感知是否有效
-  LightState light = LightState::Unknown;  // 信号灯状态（原始，未经滞回）
-  int light_cx = 0, light_cy = 0;       // 信号灯框中心
-  bool has_zebra = false;               // 检出斑马线
-  bool person_on_zebra = false;         // 行人在斑马线上（绿灯）
-  bool person_on_zebra_red = false;    // 行人在斑马线上（红灯）→ 场景4 刹车
-  std::vector<ObstacleInfo> obstacles;  // 跟踪中的障碍物
-  LaneLineInfo lane;                    // 车道线虚实
-  NavArrowInfo nav;                     // 导航箭头
-  float infer_ms = 0.0f;                // 本帧推理耗时（HUD 显示）
-  double timestamp_s = 0.0;             // 单调时间戳（秒，TTC 计算用）
-  int frame_w = 0, frame_h = 0;         // 帧尺寸（走廊/近距判定用）
+struct SpeedResult {
+  bool valid = false;
+  float speed_kmh = 0;
+  int features = 0;
+  std::string reason = "未标定";
 };
-
-// 3-of-5 滑窗滞回确认器：连续 5 次观测中 ≥3 次为真才置位。
-// 用于抑制单帧抖动导致的报警闪烁（演示稳定性的关键）。
-struct Confirm5 {
-  uint8_t hist = 0;  // 5 bit 滑窗历史（最新位在低位）
-
-  bool update(bool raw) {
-    hist = static_cast<uint8_t>(((hist << 1) | (raw ? 1 : 0)) & 0x1F);
-    int n = 0;
-    for (int i = 0; i < 5; ++i)
-      if (hist & (1 << i)) ++n;
-    return n >= 3;
-  }
-
-  void reset() { hist = 0; }
+struct Obstacle {
+  int class_id = -1; // 1=person, 10=vehicle, 11=roadblock adapter; others ignored.
+  int64_t track_id = -1;
+  Box box;
+  float confidence = 0;
+  float distance_m = -1;
+  bool predicted = false;
+  double last_observed_s = 0; // Monotonic receive clock of the last real measurement.
+  unsigned track_hits = 0; // Real measurements only; predictions never add hits.
 };
-
-// ===== 本车模拟状态（UI/键盘驱动）=====
-
+struct ObjectObservation {
+  // A partial observation updates only the listed model components. Cached
+  // results from a different model must never acquire this sample's timestamp.
+  static constexpr unsigned Traffic = 1, Vehicle = 2, Roadblock = 4, Signal = 8,
+                            Crosswalk = 16, Combined = 3, All = 7;
+  unsigned components = Combined;
+  Stamp stamp;
+  ViewId view = ViewId::Front;
+  Status traffic_status = Status::Missing;
+  Status vehicle_status = Status::Missing;
+  Status roadblock_status = Status::Missing;
+  int width = 0, height = 0;
+  LightState light = LightState::Unknown;
+  bool has_lane_lights = false;
+  std::array<LightState, 3> lane_lights{};
+  bool has_zebra = false, person_on_zebra = false;
+  std::vector<Obstacle> obstacles;
+  float infer_ms = 0;
+  std::string error;
+  Status signal_status = Status::Missing;
+  bool signal_observation = true; // Legacy full-scene light producer; neural ROI owns signals separately.
+  Status crosswalk_status = Status::Missing;
+};
+struct SignalObservation {
+  Stamp stamp;
+  Status status = Status::Missing;
+  LightState light = LightState::Unknown;
+  bool has_lane_lights = false;
+  std::array<LightState,3> lane_lights{};
+};
+struct GeometryObservation {
+  static constexpr unsigned Lane = 1, Navigation = 2, Speed = 4, All = 7;
+  unsigned components = All;
+  Stamp stamp;
+  Status status = Status::Missing;
+  int width = 0, height = 0;
+  LaneInfo lane;
+  NavInfo nav;
+  SpeedResult speed;
+  float process_ms = 0;
+};
+struct LaneObservation {
+  Stamp stamp;
+  Status status = Status::Missing;
+  int width = 0, height = 0;
+  LaneInfo lane;
+  float process_ms = 0;
+};
+struct NavigationObservation {
+  Stamp stamp;
+  Status status = Status::Missing;
+  int width = 0, height = 0;
+  NavInfo nav;
+};
+struct SpeedSample {
+  Stamp stamp;
+  Status status = Status::Missing;
+  SpeedSource source = SpeedSource::Unavailable;
+  float speed_kmh = 0;
+  std::string reason;
+};
+struct PathPoint { float x = .5f, y = 1; };
+struct LocalPlan {
+  bool valid = false;
+  Maneuver maneuver = Maneuver::Stop;
+  std::array<PathPoint,16> points{};
+  unsigned point_count = 0;
+  std::string reason;
+};
 struct EgoState {
-  LaneId lane = LaneId::Center;         // 当前车道
-  bool driving = false;                 // 行驶中 / 已停车（红灯时置 true 即"强制行驶"）
-  TurnSignal signal = TurnSignal::None; // 转向灯（变道意图）
-  float speed_kmh = 0.0f;               // 模拟车速（滑块）
-  float speed_limit = 60.0f;            // 限速（超速提醒阈值）
-  TurnSignal force_lane_change = TurnSignal::None; // 演示：强制变道指令（实线时触发报警）
+  Layout input_layout = Layout::Mosaic;
+  LaneId lane = LaneId::Center;
+  bool automatic = true, manual_stop = false, force_drive = false;
+  bool paused = false, intersection_mode = false;
+  TurnSignal signal = TurnSignal::None;
+  TurnSignal force_lane_change = TurnSignal::None;
+  bool manual_nav_enabled = false;
+  Direction manual_nav = Direction::Straight;
+  // Kept for old diagnostic callers; production decisions use speed_source.
+  bool use_visual_speed = false;
+  SpeedSource speed_source = SpeedSource::Simulation;
+  // Monotonic receive-clock time of the active turn/navigation request. Zero
+  // preserves standalone diagnostic compatibility; the UI supplies real times.
+  double lane_change_request_s = 0;
+  float manual_speed_kmh = 0, speed_limit = 60;
 };
-
-// ===== 决策输出（AdasEngine 产出，渲染/报警依据）=====
-
 struct AdasDecision {
-  bool stop_required = false;           // 要求停车（红灯/行人/刹车）
-  bool brake_now = false;               // 立即刹车（场景4 行人闯红灯）
-  bool alarm_red_run = false;           // 报警：红灯强行通过（场景1）
-  bool alarm_illegal_lane_change = false; // 报警：实线变道（场景2）
-  bool alarm_overspeed = false;         // 报警：超速
-  bool alarm_collision = false;         // 报警：碰撞风险（TTC/近距）
-  ArrowDir arrow = ArrowDir::None;      // 行驶行为箭头（叠加+LED）
-  uint8_t led_mask = 0;                 // LED 位掩码：b0=LED0左 b1=LED1直 b2=LED2右
-  LightState light = LightState::Unknown; // 滞回确认后的信号灯状态
-  std::string status_text;              // 状态栏/HUD 文案
-
+  bool stop_required = false, brake_now = false, auto_driving = false;
+  bool alarm_red_run = false, alarm_illegal_lane_change = false;
+  bool alarm_overspeed = false, alarm_collision = false;
+  bool alarm_lane_departure = false, lane_change_allowed = false;
+  // Presentation advice only; conservative stop/turn authorization is unchanged.
+  bool slowdown_warning = false;
+  bool speed_valid = false;
+  SpeedSource speed_source = SpeedSource::Unavailable;
+  float speed_kmh = 0, nearest_obstacle_m = -1, ttc_s = -1;
+  Direction arrow = Direction::Straight;
+  LightState light = LightState::Unknown;
+  uint8_t led_mask = 2;
+  std::string status_text, hint_text;
+  LocalPlan local_plan;
   bool any_alarm() const {
-    return alarm_red_run || alarm_illegal_lane_change || alarm_overspeed ||
-           alarm_collision || brake_now;
+    return brake_now || alarm_red_run || alarm_illegal_lane_change ||
+           alarm_overspeed || alarm_collision || alarm_lane_departure;
   }
 };
-
-// ===== 枚举转文字（UI 显示用，UTF-8 中文）=====
-
-inline const char *lane_id_text(LaneId lane) {
-  switch (lane) {
-    case LaneId::Left:   return u8"左车道";
-    case LaneId::Right:  return u8"右车道";
-    case LaneId::Center: return u8"直行车道";
-  }
-  return u8"未知";
+inline const char *line_text(LineType v) {
+  return v == LineType::Solid ? u8"实线" : v == LineType::Dashed ? u8"虚线" : u8"未知";
 }
-
-inline const char *light_state_text(LightState light) {
-  switch (light) {
-    case LightState::Red:    return u8"红灯";
-    case LightState::Green:  return u8"绿灯";
-    case LightState::Yellow: return u8"黄灯";
-    case LightState::Black:  return u8"黑灯";
-    case LightState::Unknown: return u8"无信号";
+inline const char *light_text(LightState v) {
+  switch (v) {
+  case LightState::Red: return u8"红灯";
+  case LightState::Green: return u8"绿灯";
+  case LightState::Yellow: return u8"黄灯";
+  default: return u8"无信号";
   }
-  return u8"无信号";
 }
-
-inline const char *line_type_text(LineType type) {
-  switch (type) {
-    case LineType::Solid:   return u8"实线";
-    case LineType::Dashed: return u8"虚线";
-    case LineType::Unknown: return u8"未知";
-  }
-  return u8"未知";
-}
-
-inline const char *arrow_dir_text(ArrowDir dir) {
-  switch (dir) {
-    case ArrowDir::Left:     return u8"左转";
-    case ArrowDir::Straight: return u8"直行";
-    case ArrowDir::Right:    return u8"右转";
-    case ArrowDir::None:     return u8"无";
-  }
-  return u8"无";
-}
-
-}  // namespace adas
-
-#endif  // ADAS_TYPES_H
+inline double monotonic_seconds(); // Defined in common/frame_packet.h.
+} // namespace adas
+#endif

@@ -1,8 +1,8 @@
 // RGA hardware preprocessor implementation.
 //
 // Uses dlopen/dlsym to load librga.so at runtime so the binary still works on
-// boards without the RGA userspace library.  Falls back to the existing NEON /
-// OpenCV CPU paths transparently.
+// boards without the RGA userspace library. Hardware failures reject image
+// preprocessing; CPU conversion is limited to the synthetic startup check.
 
 #include "inference/rga_preprocessor.h"
 
@@ -27,8 +27,6 @@
 #undef RgaInit
 #undef RgaBlit
 #undef RgaDeInit
-
-#include <opencv2/imgproc.hpp>
 
 #ifdef __ARM_NEON
 #include <arm_neon.h>
@@ -100,7 +98,7 @@ private:
 namespace {
 
 // =========================================================================
-// CPU fallback implementations (identical to the current NEON / OpenCV paths)
+// CPU reference for the synthetic startup pixel self-check only
 // =========================================================================
 
 void cpu_rgb565_to_bgr(cv::Mat &bgr, const unsigned char *frame565, int width,
@@ -153,20 +151,6 @@ void cpu_rgb565_to_bgr(cv::Mat &bgr, const unsigned char *frame565, int width,
 #endif
 }
 
-void cpu_resize(const cv::Mat &src, cv::Mat &dst, int dst_w, int dst_h) {
-  cv::resize(src, dst, cv::Size(dst_w, dst_h), 0, 0, cv::INTER_LINEAR);
-}
-
-void cpu_cvt_color(const cv::Mat &src, cv::Mat &dst, int code) {
-  cv::cvtColor(src, dst, code);
-}
-
-void cpu_crop_resize(const cv::Mat &src, cv::Mat &dst, const cv::Rect &roi,
-                     int dst_w, int dst_h) {
-  cv::Mat roi_view = src(roi);
-  cv::resize(roi_view, dst, cv::Size(dst_w, dst_h), 0, 0, cv::INTER_LINEAR);
-}
-
 } // namespace
 
 // =========================================================================
@@ -176,6 +160,34 @@ void cpu_crop_resize(const cv::Mat &src, cv::Mat &dst, const cv::Rect &roi,
 RgaPreprocessor::RgaPreprocessor() : rga_lib_(new RgaLibrary()) {}
 
 RgaPreprocessor::~RgaPreprocessor() = default;
+
+bool RgaPreprocessor::rgb565_crop_to_rgb_strict(const unsigned char *pixels,
+    int width, int height, int stride, const cv::Rect &crop, cv::Mat &output,
+    int dst_w, int dst_h, const cv::Rect &destination, unsigned char padding) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!rga_available_ || !pixels || width <= 0 || height <= 0 ||
+      stride < width * 2 || stride % 2 || crop.x < 0 || crop.y < 0 ||
+      crop.width <= 0 || crop.height <= 0 || crop.x + crop.width > width ||
+      crop.y + crop.height > height || destination.x < 0 || destination.y < 0 ||
+      destination.width <= 0 || destination.height <= 0 || dst_w <= 0 || dst_h <= 0 ||
+      destination.x + destination.width > dst_w || destination.y + destination.height > dst_h)
+    return false;
+  output.create(dst_h, dst_w, CV_8UC3);
+  // Constant model padding is a buffer fill, not an image processing fallback.
+  std::memset(output.data, padding, output.total() * output.elemSize());
+  rga_info_t source{}, target{};
+  source.fd = target.fd = -1;
+  source.virAddr = const_cast<unsigned char *>(pixels);
+  target.virAddr = output.data;
+  source.mmuFlag = target.mmuFlag = 1;
+  // Qt/FPGA RGB565 is R in bits 11..15. RGA names formats from low bits;
+  // this memory layout is BGR_565, not its low-red RGB_565.
+  rga_set_rect(&source.rect, crop.x, crop.y, crop.width, crop.height,
+               stride / 2, height, RK_FORMAT_BGR_565);
+  rga_set_rect(&target.rect, destination.x, destination.y,
+               destination.width, destination.height, dst_w, dst_h, RK_FORMAT_RGB_888);
+  return rga_lib_->RgaBlit(&source, &target, nullptr) == 0;
+}
 
 bool RgaPreprocessor::initialize() {
   if (rga_available_)
@@ -209,6 +221,7 @@ namespace {
 int to_pixel_stride(int byte_stride, int format) {
   int bpp;
   switch (format) {
+  case RK_FORMAT_BGR_565:
   case 0x400:  // RK_FORMAT_RGB_565
   case 0x500:  // RK_FORMAT_RGBA_5551
   case 0x600:  // RK_FORMAT_RGBA_4444
@@ -269,7 +282,7 @@ bool RgaPreprocessor::rga_blit(const void *src_va, int src_w, int src_h,
 // while the CPU path uses a plain left shift.  Those differ by a few LSBs, but
 // the ordering/structure must still match.  A large or structural mismatch
 // (wrong channel order, garbage, all-zero output) means RGA is unusable on this
-// board and we must fall back to CPU.
+// board and preprocessing must remain disabled.
 bool RgaPreprocessor::self_check_rgb565_to_bgr() {
   // Build a synthetic RGB565 image with varied content across all channels.
   // Keep it 8-pixel-aligned width so the NEON CPU fast path is exercised too.
@@ -292,15 +305,14 @@ bool RgaPreprocessor::self_check_rgb565_to_bgr() {
   cv::Mat cpu_bgr;
   cpu_rgb565_to_bgr(cpu_bgr, src_bytes, w, h, stride);
 
-  // Candidate: RGA conversion (direct blit, bypassing the public wrapper so a
-  // failure here does not silently fall back and mask the problem).
+  // Candidate: direct hardware blit; failure disables inference preprocessing.
   cv::Mat rga_bgr;
   rga_bgr.create(h, w, CV_8UC3);
   bool blit_ok;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     blit_ok = rga_blit(src_bytes, w, h, stride,
-                       static_cast<int>(RK_FORMAT_RGB_565), 0, 0,
+                       static_cast<int>(RK_FORMAT_BGR_565), 0, 0,
                        rga_bgr.data, w, h, static_cast<int>(w * 3),
                        static_cast<int>(RK_FORMAT_BGR_888), 0, 0);
   }
@@ -321,209 +333,6 @@ bool RgaPreprocessor::self_check_rgb565_to_bgr() {
     }
   }
   return true;
-}
-
-// -----------------------------------------------------------------------
-// Public API
-// -----------------------------------------------------------------------
-
-void RgaPreprocessor::rgb565_to_bgr(cv::Mat &bgr, const unsigned char *frame565,
-                                    int width, int height, int stride_bytes) {
-  bgr.create(height, width, CV_8UC3);
-
-  if (!rga_available_) {
-    cpu_rgb565_to_bgr(bgr, frame565, width, height, stride_bytes);
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  bool ok = rga_blit(
-      frame565, width, height, stride_bytes,
-      static_cast<int>(RK_FORMAT_RGB_565),
-      0, 0,
-      bgr.data, width, height, static_cast<int>(width * 3),
-      static_cast<int>(RK_FORMAT_BGR_888),
-      0, 0);
-
-  if (!ok) {
-    // RGA failed (e.g. alignment issue) — fall back to CPU.
-    cpu_rgb565_to_bgr(bgr, frame565, width, height, stride_bytes);
-  }
-}
-
-void RgaPreprocessor::resize(const cv::Mat &src, cv::Mat &dst,
-                             int dst_w, int dst_h) {
-  if (src.empty()) {
-    dst = cv::Mat();
-    return;
-  }
-
-  dst.create(dst_h, dst_w, src.type());
-
-  if (!rga_available_) {
-    cpu_resize(src, dst, dst_w, dst_h);
-    return;
-  }
-
-  int format;
-  int elem_size;
-  switch (src.type()) {
-  case CV_8UC3:
-    format = static_cast<int>(RK_FORMAT_BGR_888);
-    elem_size = 3;
-    break;
-  case CV_8UC1:
-    format = static_cast<int>(RK_FORMAT_BPP8);
-    elem_size = 1;
-    break;
-  default:
-    cpu_resize(src, dst, dst_w, dst_h);
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  bool ok = rga_blit(
-      src.data, src.cols, src.rows, static_cast<int>(src.cols * elem_size),
-      format, 0, 0,
-      dst.data, dst_w, dst_h, static_cast<int>(dst_w * elem_size),
-      format, 0, 0);
-
-  if (!ok)
-    cpu_resize(src, dst, dst_w, dst_h);
-}
-
-void RgaPreprocessor::cvt_color(const cv::Mat &src, cv::Mat &dst,
-                                int conversion_code) {
-  if (src.empty()) {
-    dst = cv::Mat();
-    return;
-  }
-
-  // We only accelerate BGR↔RGB swaps; everything else goes to OpenCV.
-  if (conversion_code != cv::COLOR_BGR2RGB &&
-      conversion_code != cv::COLOR_RGB2BGR) {
-    cpu_cvt_color(src, dst, conversion_code);
-    return;
-  }
-
-  dst.create(src.rows, src.cols, CV_8UC3);
-
-  if (!rga_available_) {
-    cpu_cvt_color(src, dst, conversion_code);
-    return;
-  }
-
-  // On RGA, BGR↔RGB is done by swapping the source format: read as BGR,
-  // write as RGB (or vice-versa).  The actual pixel layout change is handled
-  // by the blit engine's channel reordering.
-  int src_fmt, dst_fmt;
-  if (conversion_code == cv::COLOR_BGR2RGB) {
-    src_fmt = static_cast<int>(RK_FORMAT_BGR_888);
-    dst_fmt = static_cast<int>(RK_FORMAT_RGB_888);
-  } else {
-    src_fmt = static_cast<int>(RK_FORMAT_RGB_888);
-    dst_fmt = static_cast<int>(RK_FORMAT_BGR_888);
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  const int stride = static_cast<int>(src.cols * 3);
-  bool ok = rga_blit(src.data, src.cols, src.rows, stride, src_fmt, 0, 0,
-                     dst.data, src.cols, src.rows, stride, dst_fmt, 0, 0);
-
-  if (!ok)
-    cpu_cvt_color(src, dst, conversion_code);
-}
-
-void RgaPreprocessor::crop_resize(const cv::Mat &src, cv::Mat &dst,
-                                  const cv::Rect &roi,
-                                  int dst_w, int dst_h) {
-  if (src.empty() || roi.width <= 0 || roi.height <= 0) {
-    dst = cv::Mat();
-    return;
-  }
-
-  // Clamp ROI to source bounds.
-  const int rx = std::max(0, roi.x);
-  const int ry = std::max(0, roi.y);
-  const int rw = std::min(roi.width, src.cols - rx);
-  const int rh = std::min(roi.height, src.rows - ry);
-  if (rw <= 0 || rh <= 0) {
-    dst = cv::Mat();
-    return;
-  }
-
-  dst.create(dst_h, dst_w, src.type());
-
-  if (!rga_available_) {
-    cpu_crop_resize(src, dst, cv::Rect(rx, ry, rw, rh), dst_w, dst_h);
-    return;
-  }
-
-  int format;
-  int elem_size;
-  switch (src.type()) {
-  case CV_8UC3:
-    format = static_cast<int>(RK_FORMAT_BGR_888);
-    elem_size = 3;
-    break;
-  case CV_8UC1:
-    format = static_cast<int>(RK_FORMAT_BPP8);
-    elem_size = 1;
-    break;
-  default:
-    cpu_crop_resize(src, dst, cv::Rect(rx, ry, rw, rh), dst_w, dst_h);
-    return;
-  }
-
-  // RGA crop+resize: set the source rect to the ROI region and the dest rect
-  // to the full output dimensions.  RGA will sample only from the source rect.
-  const int src_stride = static_cast<int>(src.cols * elem_size);
-  std::lock_guard<std::mutex> lock(mutex_);
-  bool ok = rga_blit(
-      src.data, rw, rh, src_stride, format, rx, ry,
-      dst.data, dst_w, dst_h, static_cast<int>(dst_w * elem_size),
-      format, 0, 0);
-
-  if (!ok)
-    cpu_crop_resize(src, dst, cv::Rect(rx, ry, rw, rh), dst_w, dst_h);
-}
-
-void RgaPreprocessor::rgb565_to_rgb_resized(const unsigned char *frame565,
-                                            int width, int height,
-                                            int stride_bytes,
-                                            cv::Mat &output,
-                                            int dst_w, int dst_h) {
-  output.create(dst_h, dst_w, CV_8UC3);
-
-  if (!rga_available_) {
-    // CPU fallback: 565→BGR → resize → BGR→RGB
-    cv::Mat bgr;
-    cpu_rgb565_to_bgr(bgr, frame565, width, height, stride_bytes);
-    cv::Mat resized;
-    cpu_resize(bgr, resized, dst_w, dst_h);
-    cpu_cvt_color(resized, output, cv::COLOR_BGR2RGB);
-    return;
-  }
-
-  // RGA combined: RGB565 source → RGB888 destination, with built-in resize.
-  // RGA will do colour conversion (RGB565→RGB888) and bilinear downscale
-  // in a single hardware pass.
-  std::lock_guard<std::mutex> lock(mutex_);
-  bool ok = rga_blit(
-      frame565, width, height, stride_bytes,
-      static_cast<int>(RK_FORMAT_RGB_565),
-      0, 0,
-      output.data, dst_w, dst_h, static_cast<int>(dst_w * 3),
-      static_cast<int>(RK_FORMAT_RGB_888),
-      0, 0);
-
-  if (!ok) {
-    cv::Mat bgr;
-    cpu_rgb565_to_bgr(bgr, frame565, width, height, stride_bytes);
-    cv::Mat resized;
-    cpu_resize(bgr, resized, dst_w, dst_h);
-    cpu_cvt_color(resized, output, cv::COLOR_BGR2RGB);
-  }
 }
 
 } // namespace vision

@@ -124,97 +124,6 @@
             </property>
            </widget>
           </item>
-          <item>
-           <widget class="Line" name="sourceSepLine">
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QWidget" name="fileSourcePanel" native="true">
-            <layout class="QVBoxLayout" name="fileSourceLayout">
-             <property name="leftMargin">
-              <number>0</number>
-             </property>
-             <property name="topMargin">
-              <number>0</number>
-             </property>
-             <property name="rightMargin">
-              <number>0</number>
-             </property>
-             <property name="bottomMargin">
-              <number>0</number>
-             </property>
-             <property name="spacing">
-              <number>4</number>
-             </property>
-             <item>
-              <widget class="QRadioButton" name="radioPCIe">
-               <property name="text">
-                <string>PCIe 采集</string>
-               </property>
-               <property name="checked">
-                <bool>true</bool>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QRadioButton" name="radioFile">
-               <property name="text">
-                <string>文件回放</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="btnOpenFile">
-               <property name="toolTip">
-                <string>选择视频或图片文件（U 盘场景视频）</string>
-               </property>
-               <property name="text">
-                <string>打开文件...</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLabel" name="lblFileName">
-               <property name="toolTip">
-                <string>当前回放文件</string>
-               </property>
-               <property name="text">
-                <string>（未选择文件）</string>
-               </property>
-               <property name="wordWrap">
-                <bool>true</bool>
-               </property>
-               <property name="styleSheet">
-                <string notr="true">color: #888888; font-size: 11px;</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="btnPlayPause">
-               <property name="enabled">
-                <bool>false</bool>
-               </property>
-               <property name="text">
-                <string>暂停</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QCheckBox" name="chkLoop">
-               <property name="text">
-                <string>循环播放</string>
-               </property>
-               <property name="checked">
-                <bool>true</bool>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </widget>
-          </item>
          </layout>
         </widget>
        </item>
@@ -237,7 +146,7 @@
           <item>
            <widget class="QCheckBox" name="chkPlateOverlay">
             <property name="text">
-             <string>车牌定位+画框</string>
+             <string>光线增强</string>
             </property>
            </widget>
           </item>
@@ -268,28 +177,12 @@
            <number>6</number>
           </property>
           <item>
-           <widget class="QPushButton" name="pushButton">
+           <widget class="QPushButton" name="adasMode">
             <property name="toolTip">
-             <string>YOLOv5 + LPRNet 车牌检测识别</string>
+             <string>人员车辆、信号灯、斑马线与车道辅助</string>
             </property>
             <property name="text">
-             <string>车牌识别模式</string>
-            </property>
-            <property name="checkable">
-             <bool>true</bool>
-            </property>
-            <property name="autoExclusive">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="Gray">
-            <property name="toolTip">
-             <string>行人 / 斑马线 / 红绿灯检测与告警</string>
-            </property>
-            <property name="text">
-             <string>行人/斑马线模式</string>
+             <string>ADAS 模式</string>
             </property>
             <property name="checkable">
              <bool>true</bool>
@@ -313,71 +206,6 @@
             <property name="autoExclusive">
              <bool>true</bool>
             </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnAdas">
-            <property name="toolTip">
-             <string>ADAS 辅助驾驶：交通检测 + 车道线虚实 + 导航箭头 + 决策引擎（赛题四场景）</string>
-            </property>
-            <property name="text">
-             <string>ADAS 辅助驾驶</string>
-            </property>
-            <property name="checkable">
-             <bool>true</bool>
-            </property>
-            <property name="autoExclusive">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="procGroup">
-         <property name="title">
-          <string>图像处理演示</string>
-         </property>
-         <layout class="QVBoxLayout" name="procLayout">
-          <property name="spacing">
-           <number>4</number>
-          </property>
-          <item>
-           <widget class="QComboBox" name="cmbProc">
-            <property name="toolTip">
-             <string>基础图像处理算法演示（评分项）：灰度化/去噪/二值化/边缘/色彩空间</string>
-            </property>
-            <item>
-             <property name="text">
-              <string>关闭</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>灰度化</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>中值去噪</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>二值化(大津)</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Sobel 边缘</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>HSV 色彩增强</string>
-             </property>
-            </item>
            </widget>
           </item>
          </layout>
@@ -409,19 +237,6 @@
             </property>
             <property name="text">
              <string>保存图片</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="save_video">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="toolTip">
-             <string>预留功能，暂未实现</string>
-            </property>
-            <property name="text">
-             <string>录制视频</string>
             </property>
            </widget>
           </item>
@@ -611,7 +426,7 @@
           <item row="0" column="0">
            <widget class="QLabel" name="framecount">
             <property name="text">
-             <string>实时帧率</string>
+             <string>FPGA输入帧率</string>
             </property>
            </widget>
           </item>
@@ -628,7 +443,7 @@
           <item row="1" column="0">
            <widget class="QLabel" name="label_9">
             <property name="text">
-             <string>总帧数</string>
+             <string>输入总帧数</string>
             </property>
            </widget>
           </item>
@@ -670,393 +485,6 @@
            <widget class="QLabel" name="V_disp">
             <property name="text">
              <string>--</string>
-            </property>
-            <property name="alignment">
-             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="adasGroup">
-         <property name="title">
-          <string>ADAS 控制</string>
-         </property>
-         <layout class="QVBoxLayout" name="adasLayout">
-          <property name="spacing">
-           <number>4</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="lblAdasLaneCaption">
-            <property name="text">
-             <string>本车车道（按键 1/2/3）</string>
-            </property>
-            <property name="styleSheet">
-             <string notr="true">color: #888888; font-size: 11px;</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="laneButtonsLayout">
-            <property name="spacing">
-             <number>4</number>
-            </property>
-            <item>
-             <widget class="QPushButton" name="btnLaneL">
-              <property name="text">
-               <string>左</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-              <property name="autoExclusive">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btnLaneC">
-              <property name="text">
-               <string>直行</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-              <property name="autoExclusive">
-               <bool>true</bool>
-              </property>
-              <property name="checked">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btnLaneR">
-              <property name="text">
-               <string>右</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-              <property name="autoExclusive">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnDrive">
-            <property name="toolTip">
-             <string>模拟车辆停止/行驶（空格键）</string>
-            </property>
-            <property name="text">
-             <string>已停车（空格切换）</string>
-            </property>
-            <property name="checkable">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="signalButtonsLayout">
-            <property name="spacing">
-             <number>4</number>
-            </property>
-            <item>
-             <widget class="QPushButton" name="btnSigL">
-              <property name="toolTip">
-               <string>左转向灯（A 键）</string>
-              </property>
-              <property name="text">
-               <string>◀ 左转灯</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btnSigR">
-              <property name="toolTip">
-               <string>右转向灯（D 键）</string>
-              </property>
-              <property name="text">
-               <string>右转灯 ▶</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="speedLayout">
-            <property name="spacing">
-             <number>4</number>
-            </property>
-            <item>
-             <widget class="QLabel" name="lblSpeedCaption">
-              <property name="text">
-               <string>车速</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSlider" name="sliderSpeed">
-              <property name="maximum">
-               <number>120</number>
-              </property>
-              <property name="orientation">
-               <enum>Qt::Horizontal</enum>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="lblSpeed">
-              <property name="text">
-               <string>0</string>
-              </property>
-              <property name="minimumSize">
-               <size>
-                <width>32</width>
-                <height>0</height>
-               </size>
-              </property>
-              <property name="alignment">
-               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="limitLayout">
-            <property name="spacing">
-             <number>4</number>
-            </property>
-            <item>
-             <widget class="QLabel" name="lblLimitCaption">
-              <property name="text">
-               <string>限速</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="spinLimit">
-              <property name="suffix">
-               <string> km/h</string>
-              </property>
-              <property name="maximum">
-               <number>120</number>
-              </property>
-              <property name="value">
-               <number>60</number>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="forceButtonsLayout">
-            <property name="spacing">
-             <number>4</number>
-            </property>
-            <item>
-             <widget class="QPushButton" name="btnForceLaneL">
-              <property name="toolTip">
-               <string>演示：强制左变道指令（J 键）——实线时触发报警</string>
-              </property>
-              <property name="text">
-               <string>强制左变道</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btnForceLaneR">
-              <property name="toolTip">
-               <string>演示：强制右变道指令（L 键）——实线时触发报警</string>
-              </property>
-              <property name="text">
-               <string>强制右变道</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="navLayout">
-            <property name="spacing">
-             <number>4</number>
-            </property>
-            <item>
-             <widget class="QLabel" name="lblNav">
-              <property name="text">
-               <string>导航：自动</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btnNavNext">
-              <property name="toolTip">
-               <string>手动导航备份（N 键循环：直行→左转→右转→自动）</string>
-              </property>
-              <property name="text">
-               <string>手动导航</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <widget class="QLabel" name="lblNavRoiCaption">
-            <property name="text">
-             <string>导航箭头 ROI（画面百分比）</string>
-            </property>
-            <property name="styleSheet">
-             <string notr="true">color: #888888; font-size: 11px;</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="navRoiLayout">
-            <property name="spacing">
-             <number>2</number>
-            </property>
-            <item>
-             <widget class="QSpinBox" name="spinNavX">
-              <property name="maximum">
-               <number>95</number>
-              </property>
-              <property name="value">
-               <number>0</number>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="spinNavY">
-              <property name="maximum">
-               <number>95</number>
-              </property>
-              <property name="value">
-               <number>0</number>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="spinNavW">
-              <property name="minimum">
-               <number>5</number>
-              </property>
-              <property name="maximum">
-               <number>100</number>
-              </property>
-              <property name="value">
-               <number>32</number>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="spinNavH">
-              <property name="minimum">
-               <number>5</number>
-              </property>
-              <property name="maximum">
-               <number>100</number>
-              </property>
-              <property name="value">
-               <number>30</number>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="adasStatusGroup">
-         <property name="title">
-          <string>ADAS 状态</string>
-         </property>
-         <layout class="QGridLayout" name="adasStatusLayout">
-          <property name="horizontalSpacing">
-           <number>8</number>
-          </property>
-          <property name="verticalSpacing">
-           <number>4</number>
-          </property>
-          <item row="0" column="0">
-           <widget class="QLabel" name="lblLightCaption">
-            <property name="text">
-             <string>信号灯</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QLabel" name="lblLight">
-            <property name="text">
-             <string>--</string>
-            </property>
-            <property name="alignment">
-             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="lblLaneCaption">
-            <property name="text">
-             <string>车道线</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QLabel" name="lblLane">
-            <property name="text">
-             <string>--</string>
-            </property>
-            <property name="alignment">
-             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="lblDecisionCaption">
-            <property name="text">
-             <string>决策</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QLabel" name="lblDecision">
-            <property name="text">
-             <string>--</string>
-            </property>
-            <property name="alignment">
-             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="0">
-           <widget class="QLabel" name="lblAlarmCaption">
-            <property name="text">
-             <string>报警</string>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="1">
-           <widget class="QLabel" name="lblAlarm">
-            <property name="text">
-             <string>无</string>
             </property>
             <property name="alignment">
              <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
