@@ -2,64 +2,114 @@
 
 本项目是 **2026 年全国大学生嵌入式芯片与系统设计竞赛 FPGA 创新设计赛道（紫光同创杯）选题三**的参赛工程。系统基于紫光同创 **PG2L50H FPGA** 与瑞芯微 **RK3568J**，完成多路视频采集、图像增强、道路感知与辅助驾驶决策，并在 Qt 界面中叠加显示检测框、车道边界、局部路径和风险提示。车速、导航和驾驶动作由界面模拟。
 
-[技术报告（PDF）](doc/技术文档.pdf) · [ARM 开发指南](arm/README.md) · [FPGA 工程指南](FPGA/README.md)
+<p align="center">
+  <a href="doc/技术文档.pdf">技术报告（PDF）</a> ·
+  <a href="arm/README.md">ARM 开发指南</a> ·
+  <a href="FPGA/README.md">FPGA 工程指南</a>
+</p>
 
-![右侧变道场景的 ADAS 界面，画面叠加了目标检测框、车道边界和建议路径](doc/images/adas-demo.jpg)
+<p align="center">
+  <img src="doc/images/adas-interface.png" width="900" alt="Qt 上位机界面截图，左侧为采集和标定操作区，中间为视频显示区，右侧为模拟驾驶控制区">
+  <br>
+  <em>Qt 上位机界面</em>
+</p>
 
-*板端演示中的右侧虚线变道与局部路径提示。*
+## 演示与实测
+
+### 板端功能演示
+
+通过 HDMI 回放道路素材可验证变道判定、斑马线行人急刹和路口灯控。界面提供仿真车速、限速、各车道信号灯 ROI 和四点路面标定设置。
+
+<div align="center">
+<table align="center">
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="doc/images/adas-demo.jpg" width="365" alt="右侧虚线场景中，上位机叠加右变道箭头与局部路径">
+      <br><strong>虚线变道与局部路径</strong>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="doc/images/lane-change-warning.jpg" width="365" alt="实线场景中，上位机显示强制变道报警">
+      <br><strong>实线强制变道报警</strong>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top">
+      <img src="doc/images/pedestrian-warning.jpg" width="365" alt="上位机识别斑马线上的行人并显示急刹提示">
+      <br><strong>斑马线行人急刹</strong>
+    </td>
+    <td align="center" valign="top">
+      <img src="doc/images/red-light-warning.jpg" width="365" alt="路口测试中，上位机显示红灯强行驶报警">
+      <br><strong>红灯强行驶报警</strong>
+    </td>
+  </tr>
+</table>
+</div>
+
+### 板端性能
+
+<div align="center">
+<table align="center">
+  <thead>
+    <tr><th align="center">测量项</th><th align="center">报告记录</th></tr>
+  </thead>
+  <tbody>
+    <tr><td align="center">四路摄像头模式 YOLO 推理合计</td><td align="center">约 10 FPS</td></tr>
+    <tr><td align="center">HDMI 单前视模式 YOLO 推理</td><td align="center">约 20 FPS</td></tr>
+    <tr><td align="center">系统延时</td><td align="center">约 80 ms</td></tr>
+  </tbody>
+</table>
+</div>
+
+四路模式按视区调度检测任务，表中的 10 FPS 为合计值。Qt 导出的诊断 JSON 另行记录从 ARM 接收回调到 HUD 更新的延迟。板端数据见[技术报告 §3.3.4](doc/技术文档.pdf#page=21)。
 
 ## 系统架构
 
 FPGA 接收四路 OV5640 摄像头或 HDMI 道路素材，将选中的视频源统一为 **1280×720 RGB565**。摄像头模式下，DDR3 为每路保存两个全分辨率帧槽，读出时可组织成四个 640×360 视区或输出单摄全幅。四宫格从左上到右下依次对应前、右、后、左视角。
 
-| 子系统 | 职责 |
-| --- | --- |
-| FPGA | 并行视频采集、DDR3 帧缓存、四宫格组织，以及白平衡、暗通道去雾、亮度增强和双边滤波 |
-| FPGA ↔ ARM | PCIe Gen2 x2 以行级 DMA 传输视频，每行 2560 字节，主机侧使用四帧环形缓冲。BAR0 控制采集启停，I2C（`/dev/i2c-0`，地址 `0x66`）控制输入源与增强选项 |
-| RK3568J · RGA / NPU | RGA 硬件裁剪、缩放与色彩转换。NPU 交替运行两个 INT8 模型，识别行人、车辆、信号灯和斑马线 |
-| RK3568J · CPU / Qt | OpenCV 提取前视车道边界并判别虚实线，结合目标跟踪和输入时效生成决策，再由 Qt 显示路径与报警 |
-
 <p align="center">
   <img src="doc/images/system-architecture.png" width="650" alt="系统总体框图，展示摄像头和 HDMI 输入、FPGA 处理、PCIe 和 I2C 通信，以及 ARM 感知与显示">
+  <br>
+  <em>从视频采集到 Qt 显示的软硬件协同链路</em>
 </p>
+
+<div align="center">
+<table align="center">
+  <thead>
+    <tr><th align="center">子系统</th><th align="center">职责</th></tr>
+  </thead>
+  <tbody>
+    <tr><td align="center">FPGA</td><td align="center">并行采集、DDR3 帧缓存、四宫格组织，以及白平衡、暗通道去雾、亮度增强和双边滤波</td></tr>
+    <tr><td align="center">FPGA ↔ ARM</td><td align="center">PCIe Gen2 x2 以行级 DMA 传输视频，每行 2560 字节，主机侧使用四帧环形缓冲。BAR0 控制采集启停，I2C 控制输入源与增强选项</td></tr>
+    <tr><td align="center">RK3568J · RGA / NPU</td><td align="center">RGA 硬件裁剪、缩放与色彩转换。NPU 交替运行两个 INT8 模型，识别行人、车辆、信号灯和斑马线</td></tr>
+    <tr><td align="center">RK3568J · CPU / Qt</td><td align="center">OpenCV 提取前视车道边界并判别虚实线，结合目标跟踪和输入时效生成决策，再由 Qt 显示路径与报警</td></tr>
+  </tbody>
+</table>
+</div>
 
 <details>
 <summary>PCIe BAR0 与 I2C 寄存器速查</summary>
 
 单帧固定为 1,843,200 字节，FPGA 每帧发出 720 次行级 DMA 请求。BAR0 偏移与状态位见 [PIO 实现](FPGA/prj/rtl/pcie/pio_crtl.v)。
 
-| BAR0 字节偏移 | 用途 |
-| --- | --- |
-| `0x000` | 写 `0xFFFFFFE5` 启动发送，写 `0xFFFFFF00` 停止 |
-| `0x050/0x054`、`0x020/0x024`、`0x040/0x044`、`0x030/0x034` | 依次为槽位 0–3 的 64 位 DMA 基地址，每对分别写入低、高 32 位 |
-| `0x060` | 写 1 锁存 DMA 配置 |
-| `0x140` | bit 0 为帧完成标志，读后清除。bits 2:1 为帧槽编号 |
+<div align="center">
+<table align="center">
+  <thead>
+    <tr><th align="center">BAR0 字节偏移</th><th align="center">用途</th></tr>
+  </thead>
+  <tbody>
+    <tr><td align="center"><code>0x000</code></td><td align="center">写 <code>0xFFFFFFE5</code> 启动发送，写 <code>0xFFFFFF00</code> 停止</td></tr>
+    <tr><td align="center"><code>0x050/0x054</code>、<code>0x020/0x024</code><br><code>0x040/0x044</code>、<code>0x030/0x034</code></td><td align="center">依次为槽位 0–3 的 64 位 DMA 基地址，每对分别写入低、高 32 位</td></tr>
+    <tr><td align="center"><code>0x060</code></td><td align="center">写 1 锁存 DMA 配置</td></tr>
+    <tr><td align="center"><code>0x140</code></td><td align="center">bit 0 为帧完成标志，读后清除。bits 2:1 为帧槽编号</td></tr>
+  </tbody>
+</table>
+</div>
 
-I2C `0x00` 用于回环测试，`0x01` 选择视频源（0 为摄像头、1 为 HDMI），`0x02` 读回实际源。`0x03` 为 VIP 总开关，`0x04`、`0x05`、`0x06` 分别控制亮度增强、白平衡和去雾。各开关使用 bit 0，独立算子在总开关开启时生效。[I2C 寄存器实现](FPGA/prj/rtl/iic_slave/registerInterface.v)
+I2C 总线为 `/dev/i2c-0`，从机地址为 `0x66`。`0x00` 用于回环测试，`0x01` 选择视频源（0 为摄像头、1 为 HDMI），`0x02` 读回实际源。`0x03` 为 VIP 总开关，`0x04`、`0x05`、`0x06` 分别控制亮度增强、白平衡和去雾。各开关使用 bit 0，独立算子在总开关开启时生效。[I2C 寄存器实现](FPGA/prj/rtl/iic_slave/registerInterface.v)
 
 </details>
 
-## 演示与实测
-
-可使用 HDMI 回放路口和道路素材，观察分车道灯控、红灯强行驶报警、虚实线变道判定、斑马线行人急刹和碰撞风险提示。界面提供仿真车速与限速输入，也可设置各车道信号灯 ROI，使用实测地面矩形做四点标定。
-
-| 实线强制变道报警 | 斑马线行人急刹提示 |
-| :---: | :---: |
-| ![界面显示实线强制变道报警](doc/images/lane-change-warning.jpg) | ![界面识别斑马线行人并显示行人急刹提示](doc/images/pedestrian-warning.jpg) |
-
-| 测量项 | 报告记录 |
-| --- | ---: |
-| 四路摄像头模式 YOLO 推理合计 | 约 10 FPS |
-| HDMI 单前视模式 YOLO 推理 | 约 20 FPS |
-| 系统延时 | 约 80 ms |
-
-四路模式按视区调度检测任务，表中的 10 FPS 为合计值。Qt 导出的诊断 JSON 另行记录从 ARM 接收回调到 HUD 更新的延迟。板端数据见[技术报告 §3.3.4](doc/技术文档.pdf#page=21)。
-
 ## 快速开始
-
-<p align="center">
-  <img src="doc/images/hardware-setup.jpg" width="620" alt="参赛实物，包含开发板、扩展模块和运行 Qt 界面的显示器">
-</p>
 
 1. **准备 FPGA。** 用 PDS 2022.2-SP6.4 打开工程，按板卡与输入配置核对约束，通过 JTAG 下载相应位流。摄像头四路演示时，将 `KEY1` 模式设为四宫格。HDMI 回放时，将电脑接到 HDMI IN 并设置为 1280×720、30 Hz。[FPGA 构建与上板说明](FPGA/README.md#pds-工程构建与上板说明)
 2. **准备 RK3568J。** 使用 64 位 Linux 图形会话，准备 Qt 5、OpenCV 4 和兼容的 RGA、NPU 环境。先检查内核是否与附带 PCIe 模块兼容，并确保运行账号可以访问 `/dev/pango_pci_driver`、`/dev/i2c-0` 和 `/dev/mem`。[ARM 环境与构建说明](arm/README.md#环境要求与构建说明)
@@ -77,13 +127,26 @@ sh ./run_adas.sh --mode raw
 
 在窗口中依次点击 **打开**、选择 **摄像头** 或 **HDMI**、点击 **采集视频**。确认画面后，切换到 **ADAS 辅助驾驶**，设置当前车道和演示参数。[ARM 运行与交互说明](arm/README.md#运行参数与交互指南)
 
+<p align="center">
+  <img src="doc/images/hardware-setup.jpg" width="580" alt="参赛实物，包含开发板、扩展模块和运行 Qt 界面的显示器">
+  <br>
+  <em>板卡、外设与上位机显示</em>
+</p>
+
 ## 仓库内容
 
-| 路径 | 内容 |
-| --- | --- |
-| [arm/](arm/) | Qt/C++ 应用、PCIe 驱动、RKNN 模型与构建脚本 |
-| [FPGA/](FPGA/) | PDS 工程、Verilog RTL、IP、引脚约束、位流与仿真素材 |
-| [doc/](doc/) | 技术报告（[PDF](doc/技术文档.pdf)、[Word](doc/技术文档.docx)）及 README 配图 |
+<div align="center">
+<table align="center">
+  <thead>
+    <tr><th align="center">路径</th><th align="center">内容</th></tr>
+  </thead>
+  <tbody>
+    <tr><td align="center"><a href="arm/">arm/</a></td><td align="center">Qt/C++ 应用、PCIe 驱动、RKNN 模型与构建脚本</td></tr>
+    <tr><td align="center"><a href="FPGA/">FPGA/</a></td><td align="center">PDS 工程、Verilog RTL、IP、引脚约束、位流与仿真素材</td></tr>
+    <tr><td align="center"><a href="doc/">doc/</a></td><td align="center">技术报告（<a href="doc/技术文档.pdf">PDF</a>、<a href="doc/技术文档.docx">Word</a>）及 README 配图</td></tr>
+  </tbody>
+</table>
+</div>
 
 ## 第三方组件
 
